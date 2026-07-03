@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { loadNickname, saveNickname } from '../nickname.js';
+import { RulesToggle } from './RulesToggle.js';
 
 interface Props {
   onJoinPass: (pass: string, name: string) => void;
@@ -44,6 +45,7 @@ export function Home({ onJoinPass, onJoinQuick, error }: Props) {
         </button>
       </div>
       {error && <p className="error">{error}</p>}
+      <RulesToggle />
     </div>
   );
 }

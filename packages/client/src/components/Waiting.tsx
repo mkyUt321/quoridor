@@ -1,5 +1,3 @@
-import { RulesToggle } from './RulesToggle.js';
-
 interface Props {
   label: string;
   onCancel: () => void;
@@ -14,7 +12,6 @@ export function Waiting({ label, onCancel }: Props) {
       <button type="button" className="btn" onClick={onCancel}>
         キャンセル
       </button>
-      <RulesToggle />
     </div>
   );
 }
