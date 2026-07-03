@@ -307,6 +307,11 @@ body {
   font-size: 13px;
   margin: 6px 0 14px;
 }
+.wincard-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
 
 .toast {
   position: absolute;

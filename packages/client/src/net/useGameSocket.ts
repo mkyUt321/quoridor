@@ -175,6 +175,11 @@ export function useGameSocket() {
 
   const connectRoom = useCallback(
     (room: string, name: string) => {
+      // 対局終了後に再びクイックマッチへ入る等、既存の接続がある状態で呼ばれることもある。
+      // ここで明示的に閉じておかないと古い接続が残り続ける(close イベントは古い ws 自身の
+      // 参照と wsRef.current を比較して判定するため、先に wsRef.current を差し替えても
+      // 古い接続の再接続ロジックは正しく無効化される)。
+      wsRef.current?.close();
       roomRef.current = room;
       nameRef.current = name;
       tokenRef.current = null;

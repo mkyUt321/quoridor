@@ -10,6 +10,8 @@ interface Props {
   clock: Clock | null;
   onResign: () => void;
   onRematch: () => void;
+  onBackToHome: () => void;
+  backToHomeLabel: string;
   rematchRequestedByMe: boolean;
 }
 
@@ -43,7 +45,18 @@ function Countdown({ clock, seat }: { clock: Clock | null; seat: PlayerId }) {
   return <span className={`clock${remaining <= 30_000 ? ' low' : ''}`}>{formatClock(remaining)}</span>;
 }
 
-export function Hud({ state, youAre, you, opponent, clock, onResign, onRematch, rematchRequestedByMe }: Props) {
+export function Hud({
+  state,
+  youAre,
+  you,
+  opponent,
+  clock,
+  onResign,
+  onRematch,
+  onBackToHome,
+  backToHomeLabel,
+  rematchRequestedByMe,
+}: Props) {
   const gameOver = state.winner !== null;
   const myTurn = state.turn === youAre && !gameOver;
 
@@ -82,9 +95,14 @@ export function Hud({ state, youAre, you, opponent, clock, onResign, onRematch, 
           </button>
         )}
         {gameOver && (
-          <button type="button" className="btn primary" onClick={onRematch} disabled={rematchRequestedByMe}>
-            {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
-          </button>
+          <>
+            <button type="button" className="btn primary" onClick={onRematch} disabled={rematchRequestedByMe}>
+              {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
+            </button>
+            <button type="button" className="btn" onClick={onBackToHome}>
+              {backToHomeLabel}
+            </button>
+          </>
         )}
       </div>
     </div>

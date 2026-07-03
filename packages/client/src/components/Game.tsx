@@ -22,9 +22,23 @@ interface Props {
   clock: Clock | null;
   rematchRequestedByMe: boolean;
   send: (msg: ClientMsg) => void;
+  onBackToHome: () => void;
+  backToHomeLabel: string;
 }
 
-export function Game({ state, youAre, you, opponent, gameOverReason, notice, clock, rematchRequestedByMe, send }: Props) {
+export function Game({
+  state,
+  youAre,
+  you,
+  opponent,
+  gameOverReason,
+  notice,
+  clock,
+  rematchRequestedByMe,
+  send,
+  onBackToHome,
+  backToHomeLabel,
+}: Props) {
   const winnerName = state.winner === youAre ? you : opponent;
   const requestRematch = () => send({ t: 'rematch' });
   const claimedRef = useRef(false);
@@ -60,6 +74,8 @@ export function Game({ state, youAre, you, opponent, gameOverReason, notice, clo
         clock={clock}
         onResign={() => send({ t: 'resign' })}
         onRematch={requestRematch}
+        onBackToHome={onBackToHome}
+        backToHomeLabel={backToHomeLabel}
         rematchRequestedByMe={rematchRequestedByMe}
       />
       <div className="board-wrap">
@@ -71,9 +87,14 @@ export function Game({ state, youAre, you, opponent, gameOverReason, notice, clo
                 <span>{winnerName}</span> の勝ち
               </div>
               {gameOverReason && <div className="reason">{REASON_LABEL[gameOverReason]}</div>}
-              <button type="button" className="btn primary" onClick={requestRematch} disabled={rematchRequestedByMe}>
-                {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
-              </button>
+              <div className="wincard-actions">
+                <button type="button" className="btn primary" onClick={requestRematch} disabled={rematchRequestedByMe}>
+                  {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
+                </button>
+                <button type="button" className="btn" onClick={onBackToHome}>
+                  {backToHomeLabel}
+                </button>
+              </div>
             </div>
           </div>
         )}
