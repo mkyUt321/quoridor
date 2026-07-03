@@ -1,0 +1,169 @@
+:root {
+  --bg: #eef1f3;
+  --panel: #ffffff;
+  --ink: #1a2530;
+  --muted: #61707c;
+  --line: #d3dbe1;
+
+  --board-bg: #e7ebef;
+  --cell: #fafbfc;
+  --cell-line: #dde3e8;
+  --wall: #23282e;
+  --wall-edge: #14181c;
+  --p1: #2f8f88;
+  --p2: #c2764f;
+  --legal: #4a9d5f;
+  --illegal: #cf5a4c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121820;
+    --panel: #1a232c;
+    --ink: #e6edf2;
+    --muted: #8a99a5;
+    --line: #2b3843;
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #121820;
+  --panel: #1a232c;
+  --ink: #e6edf2;
+  --muted: #8a99a5;
+  --line: #2b3843;
+}
+:root[data-theme='light'] {
+  --bg: #eef1f3;
+  --panel: #ffffff;
+  --ink: #1a2530;
+  --muted: #61707c;
+  --line: #d3dbe1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', Meiryo, sans-serif;
+}
+
+#root {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.home-card,
+.wait-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.home-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.home-card input {
+  font-size: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.home-card button {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: none;
+  background: var(--p1);
+  color: #fff;
+  cursor: pointer;
+}
+.home-card button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--illegal);
+  font-size: 13px;
+}
+
+.status {
+  text-align: center;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+svg.board {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: var(--board-bg);
+  border-radius: 12px;
+  touch-action: none;
+  cursor: pointer;
+}
+
+.cell-rect {
+  fill: var(--cell);
+  stroke: var(--cell-line);
+  stroke-width: 1;
+}
+.cell-home1 {
+  fill: color-mix(in srgb, var(--p1) 8%, var(--cell));
+}
+.cell-home2 {
+  fill: color-mix(in srgb, var(--p2) 8%, var(--cell));
+}
+
+.wall-placed {
+  fill: var(--wall);
+  stroke: var(--wall-edge);
+  stroke-width: 1;
+}
+
+.legal-dot {
+  fill: var(--legal);
+  opacity: 0.5;
+}
+.legal-dot.legal-hi {
+  opacity: 1;
+}
+
+.ghost {
+  pointer-events: none;
+  opacity: 0.9;
+}
+.ghost.legal {
+  fill: var(--legal);
+}
+.ghost.illegal {
+  fill: var(--illegal);
+}
+
+.pawn-body {
+  stroke: rgba(0, 0, 0, 0.14);
+  stroke-width: 1.5;
+}
+.pawn-0 {
+  fill: var(--p1);
+}
+.pawn-1 {
+  fill: var(--p2);
+}
