@@ -22,8 +22,8 @@ interface Props {
   clock: Clock | null;
   rematchRequestedByMe: boolean;
   send: (msg: ClientMsg) => void;
+  onRematch: () => void;
   onBackToHome: () => void;
-  backToHomeLabel: string;
 }
 
 export function Game({
@@ -36,11 +36,10 @@ export function Game({
   clock,
   rematchRequestedByMe,
   send,
+  onRematch,
   onBackToHome,
-  backToHomeLabel,
 }: Props) {
-  const winnerName = state.winner === youAre ? you : opponent;
-  const requestRematch = () => send({ t: 'rematch' });
+  const youWon = state.winner === youAre;
   const claimedRef = useRef(false);
 
   // 自分の手元の時計表示が手番側の残り時間切れを検知したら、サーバへ申告する。
@@ -73,9 +72,8 @@ export function Game({
         opponent={opponent}
         clock={clock}
         onResign={() => send({ t: 'resign' })}
-        onRematch={requestRematch}
+        onRematch={onRematch}
         onBackToHome={onBackToHome}
-        backToHomeLabel={backToHomeLabel}
         rematchRequestedByMe={rematchRequestedByMe}
       />
       <div className="board-wrap">
@@ -83,16 +81,14 @@ export function Game({
         {state.winner !== null && (
           <div className="overlay show">
             <div className="wincard">
-              <div className="big">
-                <span>{winnerName}</span> の勝ち
-              </div>
+              <div className={`big${youWon ? ' win' : ' lose'}`}>{youWon ? 'あなたの勝ち!' : 'あなたの負け...'}</div>
               {gameOverReason && <div className="reason">{REASON_LABEL[gameOverReason]}</div>}
               <div className="wincard-actions">
-                <button type="button" className="btn primary" onClick={requestRematch} disabled={rematchRequestedByMe}>
+                <button type="button" className="btn primary" onClick={onRematch} disabled={rematchRequestedByMe}>
                   {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
                 </button>
                 <button type="button" className="btn" onClick={onBackToHome}>
-                  {backToHomeLabel}
+                  ホームに戻る
                 </button>
               </div>
             </div>

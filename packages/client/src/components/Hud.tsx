@@ -11,7 +11,6 @@ interface Props {
   onResign: () => void;
   onRematch: () => void;
   onBackToHome: () => void;
-  backToHomeLabel: string;
   rematchRequestedByMe: boolean;
 }
 
@@ -54,7 +53,6 @@ export function Hud({
   onResign,
   onRematch,
   onBackToHome,
-  backToHomeLabel,
   rematchRequestedByMe,
 }: Props) {
   const gameOver = state.winner !== null;
@@ -100,7 +98,7 @@ export function Hud({
               {rematchRequestedByMe ? 'もう一局(相手の応答待ち)' : 'もう一局'}
             </button>
             <button type="button" className="btn" onClick={onBackToHome}>
-              {backToHomeLabel}
+              ホームに戻る
             </button>
           </>
         )}

@@ -373,6 +373,12 @@ body {
   font-size: 24px;
   font-weight: 800;
 }
+.wincard .big.win {
+  color: var(--legal);
+}
+.wincard .big.lose {
+  color: var(--illegal);
+}
 .wincard .reason {
   color: var(--muted);
   font-size: 13px;

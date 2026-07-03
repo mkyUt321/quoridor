@@ -48,19 +48,22 @@ export function App() {
     return <Waiting label={waitLabel} onCancel={leave} />;
   }
 
-  // ランダム対戦(クイックマッチ)で入った対局は、終了後「戻る」を押しても
-  // 同じ相手との再戦を前提にせず、そのまま新しい相手を探すマッチング画面へ
-  // 直接移動する。合言葉で入った対局はホーム画面へ戻る。
-  const handleBackToHome = () => {
+  // 「もう一局」は合流方法によって意味が異なる: 合言葉で入った対局は同じ相手との
+  // 再戦(既存のrematchプロトコル)、ランダム対戦で入った対局は同じ相手を前提にせず
+  // 新たにランダムマッチを試みる。
+  const handleRematch = () => {
     if (joinMode === 'quick') {
       setWaitLabel('ランダム対戦の相手をさがしています');
       void joinQuick(you);
     } else {
-      leave();
-      setJoinMode(null);
+      send({ t: 'rematch' });
     }
   };
-  const backToHomeLabel = joinMode === 'quick' ? '次の相手を探す' : 'ホームに戻る';
+
+  const handleBackToHome = () => {
+    leave();
+    setJoinMode(null);
+  };
 
   return (
     <Game
@@ -71,10 +74,10 @@ export function App() {
       gameOverReason={gameOverReason}
       notice={notice}
       clock={clock}
-      rematchRequestedByMe={rematchRequestedByMe}
-      send={send}
+      rematchRequestedByMe={joinMode === 'quick' ? false : rematchRequestedByMe}
+      onRematch={handleRematch}
       onBackToHome={handleBackToHome}
-      backToHomeLabel={backToHomeLabel}
+      send={send}
     />
   );
 }
