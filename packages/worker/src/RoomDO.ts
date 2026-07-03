@@ -290,6 +290,10 @@ export class RoomDO implements DurableObject {
     await this.ctx.storage.setAlarm(Date.now() + RECONNECT_GRACE_MS);
   }
 
+  /**
+   * 猶予時間(RECONNECT_GRACE_MS)内に再接続がなければ、相手の接続切れが確定したと
+   * 判断し、投了(resign)と全く同じ処理で決着させる。
+   */
   async alarm(): Promise<void> {
     const pending = await this.ctx.storage.get<PendingDisconnect>('pendingDisconnect');
     if (!pending) return;
@@ -304,7 +308,7 @@ export class RoomDO implements DurableObject {
     await this.persistState();
     this.broadcast({ t: 'state', state });
     if (state.winner !== null) {
-      this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'disconnect' });
+      this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'resign' });
     }
   }
 }

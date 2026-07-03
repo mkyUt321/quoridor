@@ -11,7 +11,7 @@ export type ServerMsg =
   | { t: 'waiting' }
   | { t: 'matched'; you: PlayerId; token: string; opponent: string; state: GameState }
   | { t: 'state'; state: GameState }
-  | { t: 'gameOver'; winner: PlayerId; reason: 'goal' | 'resign' | 'disconnect' | 'timeout' }
+  | { t: 'gameOver'; winner: PlayerId; reason: 'goal' | 'resign' }
   | { t: 'opponentLeft'; grace: number }
   | { t: 'opponentBack' }
   | { t: 'rematchOffered' }

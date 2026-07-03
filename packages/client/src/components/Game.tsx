@@ -8,8 +8,6 @@ import { WaitingOverlay } from './WaitingOverlay.js';
 const REASON_LABEL: Record<GameOverReason, string> = {
   goal: 'ゴール到達',
   resign: '投了',
-  disconnect: '相手の切断',
-  timeout: '時間切れ',
 };
 
 interface Props {

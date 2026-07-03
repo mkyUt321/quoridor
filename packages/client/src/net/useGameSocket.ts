@@ -28,7 +28,7 @@ function clearPersistedSession(): void {
 }
 
 export type Phase = 'home' | 'waiting' | 'playing';
-export type GameOverReason = 'goal' | 'resign' | 'disconnect' | 'timeout';
+export type GameOverReason = 'goal' | 'resign';
 
 export type Notice =
   | { kind: 'opponentLeft'; grace: number }
