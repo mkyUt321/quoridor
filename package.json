@@ -1,0 +1,17 @@
+{
+  "name": "quoridor",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm -w @quoridor/worker run dev\" \"npm -w @quoridor/client run dev\"",
+    "build": "npm -w @quoridor/shared run build --if-present && npm -w @quoridor/worker run build --if-present && npm -w @quoridor/client run build",
+    "test": "npm -w @quoridor/shared run test && npm -w @quoridor/worker run test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2"
+  }
+}
