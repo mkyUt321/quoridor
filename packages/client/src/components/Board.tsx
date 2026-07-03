@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { legalPawnMoves, wallLegal, type GameState, type Move, type PlayerId, type Wall } from '@quoridor/shared';
 import { C, N, P, SIZE, cellXY, flipPosition, flipWall, wallRect } from '../game/geometry.js';
 import { computeHover, TOUCH_SLOP, type Hover } from '../game/interaction.js';
@@ -36,6 +36,16 @@ export function Board({ state, youAre, onMove }: Props) {
     () => legalMoves.map((m) => flipPosition(m, flip)),
     [legalMoves, flip],
   );
+
+  // 手番が自分でなくなったら(再接続直後の再同期・相手の手・対局終了など)、
+  // 保留中の壁確認バーを残さず必ずクリアする。放置すると確認ボタンが
+  // 押しても静かに無反応になり「壊れた」ように見えるため。
+  useEffect(() => {
+    if (!myTurn) {
+      setPendingWall(null);
+      setHover(null);
+    }
+  }, [myTurn]);
 
   function boardPoint(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
     const svg = svgRef.current;
