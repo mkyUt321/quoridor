@@ -25,29 +25,29 @@ export function RulesToggle() {
         <Board state={SAMPLE_STATE} youAre={0} onMove={() => {}} readOnly />
       </div>
       <div className="rules-sections">
-        <details open>
-          <summary>目的</summary>
+        <section>
+          <h3>目的</h3>
           <p>自分の駒(手前・緑)を、盤の反対側の辺(奥の行)のどこかへ先に到達させれば勝ちです。</p>
-        </details>
-        <details>
-          <summary>移動</summary>
+        </section>
+        <section>
+          <h3>移動</h3>
           <p>自分の番には、駒を上下左右に1マス動かします。図の緑の点が今動ける先です。</p>
-        </details>
-        <details>
-          <summary>壁</summary>
+        </section>
+        <section>
+          <h3>壁</h3>
           <p>
             移動の代わりに、マスとマスの間の溝に壁を1枚置くこともできます(お互い初期10枚)。相手の進路を
             妨害できますが、相手が絶対にゴールへ到達できなくなるような置き方は禁止されています(必ず道が
             1本は残ります)。図の濃い帯が置かれた壁です。
           </p>
-        </details>
-        <details>
-          <summary>ジャンプ</summary>
+        </section>
+        <section>
+          <h3>ジャンプ</h3>
           <p>
             相手の駒が正面に隣接しているときは、まっすぐ飛び越えて進めます。奥が壁や盤の端で飛び越えられ
             ない場合は、斜めへ進めます。
           </p>
-        </details>
+        </section>
       </div>
     </details>
   );
