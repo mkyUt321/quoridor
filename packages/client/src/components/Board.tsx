@@ -9,6 +9,8 @@ interface Props {
   state: GameState;
   youAre: PlayerId;
   onMove: (move: Move) => void;
+  /** true の場合、操作を一切受け付けない表示専用モード(ルール説明の図解などに使う)。 */
+  readOnly?: boolean;
 }
 
 /** hover は表示座標(視点正規化後)。合法性判定・送信前に state 座標へ戻す。 */
@@ -20,7 +22,7 @@ function hoverToState(h: Hover, flip: boolean): Hover {
   return { kind: 'wall', wall: flipWall(h.wall, flip) };
 }
 
-export function Board({ state, youAre, onMove }: Props) {
+export function Board({ state, youAre, onMove, readOnly = false }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
   const [pendingWall, setPendingWall] = useState<Wall | null>(null);
@@ -73,13 +75,13 @@ export function Board({ state, youAre, onMove }: Props) {
 
   // ===== マウス(fine) =====
   function handleMouseMove(e: MouseEvent) {
-    if (pointerKind === 'coarse' || !myTurn) return;
+    if (readOnly || pointerKind === 'coarse' || !myTurn) return;
     const bp = boardPoint(e);
     setHover(bp ? computeHover(bp.x, bp.y) : null);
   }
 
   function handleClick(e: MouseEvent) {
-    if (pointerKind === 'coarse' || !myTurn) return;
+    if (readOnly || pointerKind === 'coarse' || !myTurn) return;
     const bp = boardPoint(e);
     const displayHover = bp ? computeHover(bp.x, bp.y) : null;
     if (displayHover) tryMove(displayHover);
@@ -87,7 +89,7 @@ export function Board({ state, youAre, onMove }: Props) {
 
   // ===== タッチ(coarse): マスタップ=即移動 / 溝タップ=2段階確定 =====
   function handlePointerDown(e: PointerEvent) {
-    if (pointerKind !== 'coarse' || !myTurn) return;
+    if (readOnly || pointerKind !== 'coarse' || !myTurn) return;
     const bp = boardPoint(e);
     const displayHover = bp ? computeHover(bp.x, bp.y, TOUCH_SLOP) : null;
     setHover(displayHover);
@@ -104,7 +106,7 @@ export function Board({ state, youAre, onMove }: Props) {
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (pointerKind !== 'coarse' || !myTurn || pendingWall === null) return;
+    if (readOnly || pointerKind !== 'coarse' || !myTurn || pendingWall === null) return;
     const bp = boardPoint(e);
     const displayHover = bp ? computeHover(bp.x, bp.y, TOUCH_SLOP) : null;
     if (displayHover?.kind === 'wall') {
@@ -153,7 +155,7 @@ export function Board({ state, youAre, onMove }: Props) {
     <div className="board-frame">
       <svg
         ref={svgRef}
-        className="board"
+        className={`board${readOnly ? ' readonly' : ''}`}
         viewBox={`0 0 ${SIZE} ${SIZE}`}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => {
@@ -215,7 +217,7 @@ export function Board({ state, youAre, onMove }: Props) {
           })}
         </g>
       </svg>
-      {pointerKind === 'coarse' && pendingWall !== null && (
+      {!readOnly && pointerKind === 'coarse' && pendingWall !== null && (
         <WallConfirmBar legal={wallLegal(state, pendingWall)} onConfirm={confirmPendingWall} onCancel={cancelPendingWall} />
       )}
     </div>
