@@ -12,12 +12,15 @@ interface PendingDisconnect {
 }
 
 interface ClockStorage {
-  remainingMs: [number, number];
+  bankMs: [number, number];
   turnStartedAt: number;
 }
 
 const RECONNECT_GRACE_MS = 30_000;
-const DEFAULT_TIME_MS = 10 * 60 * 1000;
+/** 1手ごとに無条件で与えられる無料の持ち時間。この枠内で指せば予備時間は減らない。 */
+const FREE_MS = 60_000;
+/** 無料枠を超えた分だけ消費される、繰り越し式の予備時間(使った分は戻らない)。 */
+const DEFAULT_BANK_MS = 2 * 60_000;
 
 export interface Env {
   ROOM: DurableObjectNamespace;
@@ -30,7 +33,7 @@ function send(ws: WebSocket, msg: ServerMsg): void {
 
 export class RoomDO implements DurableObject {
   private session = new Session();
-  private remainingMs: [number, number] = [DEFAULT_TIME_MS, DEFAULT_TIME_MS];
+  private bankMs: [number, number] = [DEFAULT_BANK_MS, DEFAULT_BANK_MS];
   private turnStartedAt = Date.now();
 
   constructor(
@@ -46,7 +49,7 @@ export class RoomDO implements DurableObject {
       if (saved) this.session.state = saved;
       const clock = await this.ctx.storage.get<ClockStorage>('clock');
       if (clock) {
-        this.remainingMs = clock.remainingMs;
+        this.bankMs = clock.bankMs;
         this.turnStartedAt = clock.turnStartedAt;
       }
     });
@@ -58,25 +61,39 @@ export class RoomDO implements DurableObject {
 
   private async persistClock(): Promise<void> {
     await this.ctx.storage.put<ClockStorage>('clock', {
-      remainingMs: this.remainingMs,
+      bankMs: this.bankMs,
       turnStartedAt: this.turnStartedAt,
     });
   }
 
-  /** 直前の手番(moverSeat)が消費した時間を差し引き、新しい手番の計測を開始する。 */
+  /**
+   * 直前の手番(moverSeat)の消費時間を予備時間(bankMs)へ反映し、新しい手番の計測を
+   * 開始する。1手には無条件でFREE_MSの無料枠があり、それを超えた分だけ予備時間から
+   * 差し引く(使い切らなければ予備時間は減らず、そのまま次の手番へ繰り越される)。
+   */
   private tickClock(moverSeat: PlayerId): void {
     const elapsed = Date.now() - this.turnStartedAt;
-    this.remainingMs[moverSeat] = Math.max(0, this.remainingMs[moverSeat] - elapsed);
+    const overage = Math.max(0, elapsed - FREE_MS);
+    this.bankMs[moverSeat] = Math.max(0, this.bankMs[moverSeat] - overage);
     this.turnStartedAt = Date.now();
   }
 
   private resetClock(): void {
-    this.remainingMs = [DEFAULT_TIME_MS, DEFAULT_TIME_MS];
+    this.bankMs = [DEFAULT_BANK_MS, DEFAULT_BANK_MS];
     this.turnStartedAt = Date.now();
   }
 
+  /** その手番で実際に使える持ち時間(無料枠+予備時間の残り)。 */
+  private availableMs(seat: PlayerId): number {
+    return FREE_MS + this.bankMs[seat];
+  }
+
   private clockMsg(): ServerMsg {
-    return { t: 'clock', remainingMs: [...this.remainingMs], turn: this.session.state.turn };
+    return {
+      t: 'clock',
+      remainingMs: [this.availableMs(0), this.availableMs(1)],
+      turn: this.session.state.turn,
+    };
   }
 
   private sockets(): { ws: WebSocket; att: Attachment }[] {
@@ -230,7 +247,7 @@ export class RoomDO implements DurableObject {
     if (this.session.state.winner !== null) return;
     const mover = this.session.state.turn;
     const elapsed = Date.now() - this.turnStartedAt;
-    const effectiveRemaining = this.remainingMs[mover] - elapsed;
+    const effectiveRemaining = this.availableMs(mover) - elapsed;
     if (effectiveRemaining > 0) return;
 
     const to = bestMoveTowardGoal(this.session.state, mover);
