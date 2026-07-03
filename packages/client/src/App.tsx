@@ -5,33 +5,48 @@ import { Waiting } from './components/Waiting.js';
 import { useGameSocket } from './net/useGameSocket.js';
 
 export function App() {
-  const { phase, state, youAre, opponent, error, gameOverReason, notice, rematchRequestedByMe, joinPass, send, leave } =
-    useGameSocket();
-  const [nick, setNick] = useState('');
-  const [pass, setPass] = useState('');
+  const {
+    phase,
+    state,
+    youAre,
+    you,
+    opponent,
+    error,
+    gameOverReason,
+    notice,
+    rematchRequestedByMe,
+    joinPass,
+    joinQuick,
+    send,
+    leave,
+  } = useGameSocket();
+  const [waitLabel, setWaitLabel] = useState('');
 
   if (phase === 'home') {
     return (
       <Home
         error={error}
-        onJoin={(p, name) => {
-          setNick(name);
-          setPass(p);
-          joinPass(p, name);
+        onJoinPass={(pass, name) => {
+          setWaitLabel(`あいことば「${pass}」で待機中`);
+          joinPass(pass, name);
+        }}
+        onJoinQuick={(name) => {
+          setWaitLabel('ランダム対戦の相手をさがしています');
+          void joinQuick(name);
         }}
       />
     );
   }
 
   if (state === null || youAre === null) {
-    return <Waiting pass={pass} onCancel={leave} />;
+    return <Waiting label={waitLabel} onCancel={leave} />;
   }
 
   return (
     <Game
       state={state}
       youAre={youAre}
-      you={nick}
+      you={you}
       opponent={opponent ?? 'あいて'}
       gameOverReason={gameOverReason}
       notice={notice}

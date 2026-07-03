@@ -1,16 +1,14 @@
 interface Props {
-  pass: string;
+  label: string;
   onCancel: () => void;
 }
 
-export function Waiting({ pass, onCancel }: Props) {
+export function Waiting({ label, onCancel }: Props) {
   return (
     <div className="wait-card">
       <div className="spinner" />
-      <p className="msg">
-        あいことば「<b>{pass}</b>」で待機中
-      </p>
-      <p className="hint">相手が同じあいことばを入力すると対局が始まります</p>
+      <p className="msg">{label}</p>
+      <p className="hint">相手が見つかると対局が始まります</p>
       <button type="button" className="btn" onClick={onCancel}>
         キャンセル
       </button>

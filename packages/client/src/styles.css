@@ -93,6 +93,13 @@ body {
   color: var(--ink);
 }
 
+.home-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 .home-card button {
   font-size: 15px;
   font-weight: 700;
@@ -102,6 +109,11 @@ body {
   background: var(--p1);
   color: #fff;
   cursor: pointer;
+}
+.home-card button.secondary {
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
 }
 .home-card button:disabled {
   opacity: 0.5;

@@ -7,8 +7,15 @@ interface Attachment {
   name: string;
 }
 
+interface PendingDisconnect {
+  seat: PlayerId;
+}
+
+const RECONNECT_GRACE_MS = 30_000;
+
 export interface Env {
   ROOM: DurableObjectNamespace;
+  LOBBY: DurableObjectNamespace;
 }
 
 function send(ws: WebSocket, msg: ServerMsg): void {
@@ -60,6 +67,7 @@ export class RoomDO implements DurableObject {
     const token = crypto.randomUUID();
     server.serializeAttachment({ seat, token, name } satisfies Attachment);
     this.ctx.acceptWebSocket(server, [`seat:${seat}`]);
+    await this.clearPendingDisconnect(seat);
 
     const opponent = this.other(seat);
     if (opponent) {
@@ -133,12 +141,52 @@ export class RoomDO implements DurableObject {
       }
       return;
     }
+
+    if (parsed.t === 'rejoin') {
+      this.handleRejoin(ws, att);
+      return;
+    }
   }
 
-  webSocketClose(ws: WebSocket): void {
+  private async clearPendingDisconnect(seat: PlayerId): Promise<void> {
+    const pending = await this.ctx.storage.get<PendingDisconnect>('pendingDisconnect');
+    if (!pending || pending.seat !== seat) return;
+    await this.ctx.storage.delete('pendingDisconnect');
+    await this.ctx.storage.deleteAlarm();
+  }
+
+  private async handleRejoin(ws: WebSocket, att: Attachment): Promise<void> {
+    await this.clearPendingDisconnect(att.seat);
+    send(ws, { t: 'state', state: this.session.state });
+    const opponent = this.other(att.seat);
+    if (opponent) send(opponent.ws, { t: 'opponentBack' });
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
     const opponent = this.other(att.seat);
-    if (opponent) send(opponent.ws, { t: 'opponentLeft', grace: 30 });
+    if (!opponent || this.session.state.winner !== null) return;
+
+    send(opponent.ws, { t: 'opponentLeft', grace: RECONNECT_GRACE_MS / 1000 });
+    await this.ctx.storage.put<PendingDisconnect>('pendingDisconnect', { seat: att.seat });
+    await this.ctx.storage.setAlarm(Date.now() + RECONNECT_GRACE_MS);
+  }
+
+  async alarm(): Promise<void> {
+    const pending = await this.ctx.storage.get<PendingDisconnect>('pendingDisconnect');
+    if (!pending) return;
+    await this.ctx.storage.delete('pendingDisconnect');
+    if (this.session.state.winner !== null) return;
+
+    // 猶予中に同じ席へ生きた接続が戻っていれば、実際には再接続済みなので何もしない。
+    const stillDisconnected = !this.sockets().some((s) => s.att.seat === pending.seat);
+    if (!stillDisconnected) return;
+
+    const state = this.session.resign(pending.seat);
+    this.broadcast({ t: 'state', state });
+    if (state.winner !== null) {
+      this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'disconnect' });
+    }
   }
 }
