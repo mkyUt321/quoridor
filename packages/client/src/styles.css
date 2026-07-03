@@ -14,6 +14,7 @@
   --p2: #c2764f;
   --legal: #4a9d5f;
   --illegal: #cf5a4c;
+  --board-muted: #61707c;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -267,6 +268,9 @@ body {
 }
 .board-frame {
   position: relative;
+  /* 盤面は常に明るい面(テーマ非依存)。OS/ブラウザの強制ダーク化補正が
+     SVGに掛かるとトークンの配色が崩れるため、この範囲だけ light を明示する。 */
+  color-scheme: light;
 }
 
 .overlay {
@@ -345,7 +349,7 @@ svg.board {
 
 .lastmove {
   fill: none;
-  stroke: var(--muted);
+  stroke: var(--board-muted);
   stroke-dasharray: 4 4;
   opacity: 0.5;
   pointer-events: none;
