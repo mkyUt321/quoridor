@@ -20,8 +20,11 @@ function nearestAnchor(cands: number[], coord: number): number {
   return best;
 }
 
+/** タッチ環境で溝(壁)を狙いやすくするためのマス帯の縮小幅。既定は 0(縮小なし)。 */
+export const TOUCH_SLOP = 10;
+
 /** x,y は盤面の外枠内側(P だけオフセット済み)を原点とする座標。マス上かどうか、壁の場合は最寄りスロットへスナップして判定する。 */
-export function computeHover(x: number, y: number): Hover | null {
+export function computeHover(x: number, y: number, slop = 0): Hover | null {
   const span = N * C + (N - 1) * G;
   if (x < -6 || y < -6 || x > span + 6 || y > span + 6) return null;
 
@@ -29,8 +32,9 @@ export function computeHover(x: number, y: number): Hover | null {
   const row = Math.max(0, Math.min(N - 1, Math.floor(y / STEP)));
   const xin = x - col * STEP;
   const yin = y - row * STEP;
-  const inColBand = xin <= C;
-  const inRowBand = yin <= C;
+  const band = C - slop;
+  const inColBand = xin <= band;
+  const inRowBand = yin <= band;
 
   if (inColBand && inRowBand) return { kind: 'pawn', r: row, c: col };
 

@@ -1,7 +1,9 @@
-import { useMemo, useRef, useState, type MouseEvent } from 'react';
-import { legalPawnMoves, wallLegal, type GameState, type Move, type PlayerId } from '@quoridor/shared';
-import { C, N, P, SIZE, cellXY, wallRect } from '../game/geometry.js';
-import { computeHover, type Hover } from '../game/interaction.js';
+import { useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { legalPawnMoves, wallLegal, type GameState, type Move, type PlayerId, type Wall } from '@quoridor/shared';
+import { C, N, P, SIZE, cellXY, flipPosition, flipWall, wallRect } from '../game/geometry.js';
+import { computeHover, TOUCH_SLOP, type Hover } from '../game/interaction.js';
+import { usePointerKind } from '../usePointerKind.js';
+import { WallConfirmBar } from './WallConfirmBar.js';
 
 interface Props {
   state: GameState;
@@ -9,14 +11,30 @@ interface Props {
   onMove: (move: Move) => void;
 }
 
+/** hover は表示座標(視点正規化後)。合法性判定・送信前に state 座標へ戻す。 */
+function hoverToState(h: Hover, flip: boolean): Hover {
+  if (h.kind === 'pawn') {
+    const pos = flipPosition({ r: h.r, c: h.c }, flip);
+    return { kind: 'pawn', r: pos.r, c: pos.c };
+  }
+  return { kind: 'wall', wall: flipWall(h.wall, flip) };
+}
+
 export function Board({ state, youAre, onMove }: Props) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
+  const [pendingWall, setPendingWall] = useState<Wall | null>(null);
+  const pointerKind = usePointerKind();
+  const flip = youAre === 1;
 
   const myTurn = state.turn === youAre && state.winner === null;
   const legalMoves = useMemo(
     () => (state.winner === null ? legalPawnMoves(state, state.turn) : []),
     [state],
+  );
+  const displayLegalMoves = useMemo(
+    () => legalMoves.map((m) => flipPosition(m, flip)),
+    [legalMoves, flip],
   );
 
   function boardPoint(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
@@ -31,89 +49,165 @@ export function Board({ state, youAre, onMove }: Props) {
     return { x: p.x - P, y: p.y - P };
   }
 
-  function handleMove(e: MouseEvent) {
-    if (!myTurn) {
-      setHover(null);
-      return;
+  function tryMove(displayHover: Hover) {
+    const stateHover = hoverToState(displayHover, flip);
+    if (stateHover.kind === 'pawn') {
+      if (!legalMoves.some((m) => m.r === stateHover.r && m.c === stateHover.c)) return;
+      onMove({ type: 'pawn', to: { r: stateHover.r, c: stateHover.c } });
+    } else {
+      if (!wallLegal(state, stateHover.wall)) return;
+      onMove({ type: 'wall', wall: stateHover.wall });
     }
+    setHover(null);
+  }
+
+  // ===== マウス(fine) =====
+  function handleMouseMove(e: MouseEvent) {
+    if (pointerKind === 'coarse' || !myTurn) return;
     const bp = boardPoint(e);
     setHover(bp ? computeHover(bp.x, bp.y) : null);
   }
 
   function handleClick(e: MouseEvent) {
-    if (!myTurn) return;
+    if (pointerKind === 'coarse' || !myTurn) return;
     const bp = boardPoint(e);
-    const clicked = bp ? computeHover(bp.x, bp.y) : null;
-    if (!clicked) return;
-    if (clicked.kind === 'pawn') {
-      if (!legalMoves.some((m) => m.r === clicked.r && m.c === clicked.c)) return;
-      onMove({ type: 'pawn', to: { r: clicked.r, c: clicked.c } });
-    } else {
-      if (!wallLegal(state, clicked.wall)) return;
-      onMove({ type: 'wall', wall: clicked.wall });
+    const displayHover = bp ? computeHover(bp.x, bp.y) : null;
+    if (displayHover) tryMove(displayHover);
+  }
+
+  // ===== タッチ(coarse): マスタップ=即移動 / 溝タップ=2段階確定 =====
+  function handlePointerDown(e: PointerEvent) {
+    if (pointerKind !== 'coarse' || !myTurn) return;
+    const bp = boardPoint(e);
+    const displayHover = bp ? computeHover(bp.x, bp.y, TOUCH_SLOP) : null;
+    setHover(displayHover);
+    if (!displayHover) {
+      setPendingWall(null);
+      return;
     }
+    if (displayHover.kind === 'pawn') {
+      tryMove(displayHover);
+      setPendingWall(null);
+    } else {
+      setPendingWall(flipWall(displayHover.wall, flip));
+    }
+  }
+
+  function handlePointerMove(e: PointerEvent) {
+    if (pointerKind !== 'coarse' || !myTurn || pendingWall === null) return;
+    const bp = boardPoint(e);
+    const displayHover = bp ? computeHover(bp.x, bp.y, TOUCH_SLOP) : null;
+    if (displayHover?.kind === 'wall') {
+      setHover(displayHover);
+      setPendingWall(flipWall(displayHover.wall, flip));
+    }
+  }
+
+  function confirmPendingWall() {
+    if (!pendingWall || !myTurn || !wallLegal(state, pendingWall)) return;
+    onMove({ type: 'wall', wall: pendingWall });
+    setPendingWall(null);
+    setHover(null);
+  }
+
+  function cancelPendingWall() {
+    setPendingWall(null);
     setHover(null);
   }
 
   const cells = [];
   for (let r = 0; r < N; r++) {
     for (let c = 0; c < N; c++) {
+      const home = flipPosition({ r, c }, flip);
       const { x, y } = cellXY(r, c);
-      const cls = r === N - 1 ? 'cell-rect cell-home1' : r === 0 ? 'cell-rect cell-home2' : 'cell-rect';
+      const cls = home.r === N - 1 ? 'cell-rect cell-home1' : home.r === 0 ? 'cell-rect cell-home2' : 'cell-rect';
       cells.push(<rect key={`${r}-${c}`} x={x} y={y} width={C} height={C} rx={7} className={cls} />);
     }
   }
 
+  const lastMoveRect = useMemo(() => {
+    if (!state.last) return null;
+    if (state.last.type === 'pawn') {
+      const from = flipPosition(state.last.from, flip);
+      const { x, y } = cellXY(from.r, from.c);
+      return { x: x + 3, y: y + 3, w: C - 6, h: C - 6, rx: 6 };
+    }
+    const w = flipWall(state.last.wall, flip);
+    const rc = wallRect(w);
+    return { x: rc.x - 2, y: rc.y - 2, w: rc.w + 4, h: rc.h + 4, rx: 5 };
+  }, [state.last, flip]);
+
+  const hoverLegal = hover?.kind === 'wall' ? wallLegal(state, flipWall(hover.wall, flip)) : null;
+
   return (
-    <svg
-      ref={svgRef}
-      className="board"
-      viewBox={`0 0 ${SIZE} ${SIZE}`}
-      onMouseMove={handleMove}
-      onMouseLeave={() => setHover(null)}
-      onClick={handleClick}
-    >
-      <g>{cells}</g>
-      <g>
-        {state.walls.map((w, i) => {
-          const rc = wallRect(w);
-          return <rect key={i} x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={4} className="wall-placed" />;
-        })}
-      </g>
-      <g>
-        {legalMoves.map((m, i) => {
-          const { x, y } = cellXY(m.r, m.c);
-          const isHover = hover?.kind === 'pawn' && hover.r === m.r && hover.c === m.c;
-          return (
-            <circle
-              key={i}
-              cx={x + C / 2}
-              cy={y + C / 2}
-              r={isHover ? 12 : 8}
-              className={`legal-dot${isHover ? ' legal-hi' : ''}`}
-            />
-          );
-        })}
-      </g>
-      {hover?.kind === 'wall' &&
-        myTurn &&
-        (() => {
-          const rc = wallRect(hover.wall);
-          const legal = wallLegal(state, hover.wall);
-          return (
-            <rect x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={4} className={`ghost ${legal ? 'legal' : 'illegal'}`} />
-          );
-        })()}
-      <g>
-        {state.pawns.map((pawn, i) => {
-          const { x, y } = cellXY(pawn.r, pawn.c);
-          return (
-            <g key={i} transform={`translate(${x + C / 2} ${y + C / 2})`}>
-              <circle r={18} className={`pawn-body pawn-${i}`} />
-            </g>
-          );
-        })}
-      </g>
-    </svg>
+    <div className="board-frame">
+      <svg
+        ref={svgRef}
+        className="board"
+        viewBox={`0 0 ${SIZE} ${SIZE}`}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => {
+          if (pointerKind === 'fine') setHover(null);
+        }}
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+      >
+        <g>{cells}</g>
+        {lastMoveRect && (
+          <rect
+            x={lastMoveRect.x}
+            y={lastMoveRect.y}
+            width={lastMoveRect.w}
+            height={lastMoveRect.h}
+            rx={lastMoveRect.rx}
+            className="lastmove"
+          />
+        )}
+        <g>
+          {state.walls.map((w, i) => {
+            const rc = wallRect(flipWall(w, flip));
+            return <rect key={i} x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={4} className="wall-placed" />;
+          })}
+        </g>
+        <g>
+          {displayLegalMoves.map((m, i) => {
+            const { x, y } = cellXY(m.r, m.c);
+            const isHover = hover?.kind === 'pawn' && hover.r === m.r && hover.c === m.c;
+            return (
+              <circle
+                key={i}
+                cx={x + C / 2}
+                cy={y + C / 2}
+                r={isHover ? 12 : 8}
+                className={`legal-dot${isHover ? ' legal-hi' : ''}`}
+              />
+            );
+          })}
+        </g>
+        {hover?.kind === 'wall' &&
+          myTurn &&
+          (() => {
+            const rc = wallRect(hover.wall);
+            return (
+              <rect x={rc.x} y={rc.y} width={rc.w} height={rc.h} rx={4} className={`ghost ${hoverLegal ? 'legal' : 'illegal'}`} />
+            );
+          })()}
+        <g>
+          {state.pawns.map((pawn, i) => {
+            const disp = flipPosition(pawn, flip);
+            const { x, y } = cellXY(disp.r, disp.c);
+            return (
+              <g key={i} className="pawn" transform={`translate(${x + C / 2} ${y + C / 2})`}>
+                <circle r={18} className={`pawn-body pawn-${i}`} />
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+      {pointerKind === 'coarse' && pendingWall !== null && (
+        <WallConfirmBar legal={wallLegal(state, pendingWall)} onConfirm={confirmPendingWall} onCancel={cancelPendingWall} />
+      )}
+    </div>
   );
 }
