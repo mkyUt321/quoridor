@@ -1,7 +1,11 @@
 import { LobbyDO } from './LobbyDO.js';
-import { RoomDO, type Env } from './RoomDO.js';
+import { RoomDO, type Env as RoomEnv } from './RoomDO.js';
 
 export { LobbyDO, RoomDO };
+
+interface Env extends RoomEnv {
+  ASSETS: Fetcher;
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -19,6 +23,6 @@ export default {
       return env.ROOM.get(id).fetch(request);
     }
 
-    return new Response('not found', { status: 404 });
+    return env.ASSETS.fetch(request);
   },
 };
