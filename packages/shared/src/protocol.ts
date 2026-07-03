@@ -4,17 +4,19 @@ export type ClientMsg =
   | { t: 'move'; move: Move }
   | { t: 'resign' }
   | { t: 'rematch' }
-  | { t: 'rejoin'; token: string };
+  | { t: 'rejoin'; token: string }
+  | { t: 'claimTimeout' };
 
 export type ServerMsg =
   | { t: 'waiting' }
   | { t: 'matched'; you: PlayerId; token: string; opponent: string; state: GameState }
   | { t: 'state'; state: GameState }
-  | { t: 'gameOver'; winner: PlayerId; reason: 'goal' | 'resign' | 'disconnect' }
+  | { t: 'gameOver'; winner: PlayerId; reason: 'goal' | 'resign' | 'disconnect' | 'timeout' }
   | { t: 'opponentLeft'; grace: number }
   | { t: 'opponentBack' }
   | { t: 'rematchOffered' }
   | { t: 'rematchAgreed' }
+  | { t: 'clock'; remainingMs: [number, number]; turn: PlayerId }
   | { t: 'error'; code: string; message: string };
 
 export interface QuickMatchResponse {
@@ -32,6 +34,7 @@ export function isClientMsg(v: unknown): v is ClientMsg {
       return isRecord(v.move);
     case 'resign':
     case 'rematch':
+    case 'claimTimeout':
       return true;
     case 'rejoin':
       return typeof v.token === 'string';
@@ -56,6 +59,8 @@ export function isServerMsg(v: unknown): v is ServerMsg {
       return typeof v.winner === 'number' && typeof v.reason === 'string';
     case 'opponentLeft':
       return typeof v.grace === 'number';
+    case 'clock':
+      return Array.isArray(v.remainingMs) && v.remainingMs.length === 2 && typeof v.turn === 'number';
     case 'error':
       return typeof v.code === 'string' && typeof v.message === 'string';
     default:

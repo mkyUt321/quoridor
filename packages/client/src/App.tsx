@@ -14,6 +14,7 @@ export function App() {
     error,
     gameOverReason,
     notice,
+    clock,
     rematchRequestedByMe,
     joinPass,
     joinQuick,
@@ -50,6 +51,7 @@ export function App() {
       opponent={opponent ?? 'あいて'}
       gameOverReason={gameOverReason}
       notice={notice}
+      clock={clock}
       rematchRequestedByMe={rematchRequestedByMe}
       send={send}
     />

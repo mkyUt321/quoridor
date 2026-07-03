@@ -11,7 +11,13 @@ interface PendingDisconnect {
   seat: PlayerId;
 }
 
+interface ClockStorage {
+  remainingMs: [number, number];
+  turnStartedAt: number;
+}
+
 const RECONNECT_GRACE_MS = 30_000;
+const DEFAULT_TIME_MS = 10 * 60 * 1000;
 
 export interface Env {
   ROOM: DurableObjectNamespace;
@@ -24,23 +30,53 @@ function send(ws: WebSocket, msg: ServerMsg): void {
 
 export class RoomDO implements DurableObject {
   private session = new Session();
+  private remainingMs: [number, number] = [DEFAULT_TIME_MS, DEFAULT_TIME_MS];
+  private turnStartedAt = Date.now();
 
   constructor(
     private ctx: DurableObjectState,
     _env: Env,
   ) {
     // Durable Object はアイドル時にハイバネートされ、次のアクセスで
-    // コンストラクタが再実行される。session はメモリ上だけの状態なので、
-    // 復帰のたびに ctx.storage から対局状態を復元しないと進行状況が
+    // コンストラクタが再実行される。session と持ち時間はメモリ上だけの
+    // 状態なので、復帰のたびに ctx.storage から復元しないと進行状況が
     // 消えてしまう(再接続の有無に関わらず起こりうる)。
     this.ctx.blockConcurrencyWhile(async () => {
       const saved = await this.ctx.storage.get<GameState>('gameState');
       if (saved) this.session.state = saved;
+      const clock = await this.ctx.storage.get<ClockStorage>('clock');
+      if (clock) {
+        this.remainingMs = clock.remainingMs;
+        this.turnStartedAt = clock.turnStartedAt;
+      }
     });
   }
 
   private async persistState(): Promise<void> {
     await this.ctx.storage.put('gameState', this.session.state);
+  }
+
+  private async persistClock(): Promise<void> {
+    await this.ctx.storage.put<ClockStorage>('clock', {
+      remainingMs: this.remainingMs,
+      turnStartedAt: this.turnStartedAt,
+    });
+  }
+
+  /** 直前の手番(moverSeat)が消費した時間を差し引き、新しい手番の計測を開始する。 */
+  private tickClock(moverSeat: PlayerId): void {
+    const elapsed = Date.now() - this.turnStartedAt;
+    this.remainingMs[moverSeat] = Math.max(0, this.remainingMs[moverSeat] - elapsed);
+    this.turnStartedAt = Date.now();
+  }
+
+  private resetClock(): void {
+    this.remainingMs = [DEFAULT_TIME_MS, DEFAULT_TIME_MS];
+    this.turnStartedAt = Date.now();
+  }
+
+  private clockMsg(): ServerMsg {
+    return { t: 'clock', remainingMs: [...this.remainingMs], turn: this.session.state.turn };
   }
 
   private sockets(): { ws: WebSocket; att: Attachment }[] {
@@ -87,6 +123,11 @@ export class RoomDO implements DurableObject {
 
     const opponent = this.other(seat);
     if (opponent) {
+      const freshGame = this.session.state.last === null && this.session.state.winner === null;
+      if (freshGame) {
+        this.turnStartedAt = Date.now();
+        await this.persistClock();
+      }
       send(server, {
         t: 'matched',
         you: seat,
@@ -101,6 +142,7 @@ export class RoomDO implements DurableObject {
         opponent: name,
         state: this.session.state,
       });
+      this.broadcast(this.clockMsg());
     } else {
       send(server, { t: 'waiting' });
     }
@@ -130,8 +172,11 @@ export class RoomDO implements DurableObject {
         send(ws, { t: 'error', code: 'illegal_move', message: result.error });
         return;
       }
+      this.tickClock(att.seat);
       await this.persistState();
+      await this.persistClock();
       this.broadcast({ t: 'state', state: result.value });
+      this.broadcast(this.clockMsg());
       if (result.value.winner !== null) {
         this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
       }
@@ -154,9 +199,12 @@ export class RoomDO implements DurableObject {
         const opponent = this.other(att.seat);
         if (opponent) send(opponent.ws, { t: 'rematchOffered' });
       } else {
+        this.resetClock();
         await this.persistState();
+        await this.persistClock();
         this.broadcast({ t: 'rematchAgreed' });
         this.broadcast({ t: 'state', state: this.session.state });
+        this.broadcast(this.clockMsg());
       }
       return;
     }
@@ -164,6 +212,27 @@ export class RoomDO implements DurableObject {
     if (parsed.t === 'rejoin') {
       await this.handleRejoin(ws, att);
       return;
+    }
+
+    if (parsed.t === 'claimTimeout') {
+      await this.handleClaimTimeout();
+      return;
+    }
+  }
+
+  /** クライアントからの「相手の持ち時間が切れた」という申告をサーバ側で再計算して検証する。 */
+  private async handleClaimTimeout(): Promise<void> {
+    if (this.session.state.winner !== null) return;
+    const mover = this.session.state.turn;
+    const elapsed = Date.now() - this.turnStartedAt;
+    const effectiveRemaining = this.remainingMs[mover] - elapsed;
+    if (effectiveRemaining > 0) return;
+
+    const state = this.session.resign(mover);
+    await this.persistState();
+    this.broadcast({ t: 'state', state });
+    if (state.winner !== null) {
+      this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'timeout' });
     }
   }
 
@@ -177,6 +246,7 @@ export class RoomDO implements DurableObject {
   private async handleRejoin(ws: WebSocket, att: Attachment): Promise<void> {
     await this.clearPendingDisconnect(att.seat);
     send(ws, { t: 'state', state: this.session.state });
+    send(ws, this.clockMsg());
     const opponent = this.other(att.seat);
     if (opponent) send(opponent.ws, { t: 'opponentBack' });
   }

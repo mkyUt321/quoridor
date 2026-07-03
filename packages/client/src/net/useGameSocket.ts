@@ -28,12 +28,20 @@ function clearPersistedSession(): void {
 }
 
 export type Phase = 'home' | 'waiting' | 'playing';
-export type GameOverReason = 'goal' | 'resign' | 'disconnect';
+export type GameOverReason = 'goal' | 'resign' | 'disconnect' | 'timeout';
 
 export type Notice =
   | { kind: 'opponentLeft'; grace: number }
   | { kind: 'opponentBack' }
   | { kind: 'rematchOffered' };
+
+/** 持ち時間。syncedAt はこの remainingMs を受け取った時刻(クライアントの Date.now())で、
+ *  手番側の残り時間は Date.now() - syncedAt を差し引いて表示する。 */
+export interface Clock {
+  remainingMs: [number, number];
+  turn: PlayerId;
+  syncedAt: number;
+}
 
 export interface GameSocketState {
   phase: Phase;
@@ -47,6 +55,7 @@ export interface GameSocketState {
   notice: Notice | null;
   /** 自分がまだ rematch を要求していないか。true の間は自分のボタンを「応答待ち」で無効化する。 */
   rematchRequestedByMe: boolean;
+  clock: Clock | null;
 }
 
 const MIN_BACKOFF_MS = 500;
@@ -67,6 +76,7 @@ const initialState: GameSocketState = {
   gameOverReason: null,
   notice: null,
   rematchRequestedByMe: false,
+  clock: null,
 };
 
 export function useGameSocket() {
@@ -136,6 +146,12 @@ export function useGameSocket() {
           break;
         case 'rematchAgreed':
           setState((s) => ({ ...s, notice: null, gameOverReason: null, rematchRequestedByMe: false }));
+          break;
+        case 'clock':
+          setState((s) => ({
+            ...s,
+            clock: { remainingMs: parsed.remainingMs, turn: parsed.turn, syncedAt: Date.now() },
+          }));
           break;
         case 'error':
           setState((s) => ({ ...s, error: parsed.message }));

@@ -245,6 +245,15 @@ body {
 .pip.used {
   opacity: 0.16;
 }
+.clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+.clock.low {
+  color: var(--illegal);
+}
 .turnwrap {
   text-align: center;
 }
