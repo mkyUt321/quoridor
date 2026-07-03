@@ -1,4 +1,4 @@
-import { isClientMsg, type PlayerId, type ServerMsg } from '@quoridor/shared';
+import { isClientMsg, type GameState, type PlayerId, type ServerMsg } from '@quoridor/shared';
 import { Session } from './session.js';
 
 interface Attachment {
@@ -25,7 +25,23 @@ function send(ws: WebSocket, msg: ServerMsg): void {
 export class RoomDO implements DurableObject {
   private session = new Session();
 
-  constructor(private ctx: DurableObjectState, _env: Env) {}
+  constructor(
+    private ctx: DurableObjectState,
+    _env: Env,
+  ) {
+    // Durable Object はアイドル時にハイバネートされ、次のアクセスで
+    // コンストラクタが再実行される。session はメモリ上だけの状態なので、
+    // 復帰のたびに ctx.storage から対局状態を復元しないと進行状況が
+    // 消えてしまう(再接続の有無に関わらず起こりうる)。
+    this.ctx.blockConcurrencyWhile(async () => {
+      const saved = await this.ctx.storage.get<GameState>('gameState');
+      if (saved) this.session.state = saved;
+    });
+  }
+
+  private async persistState(): Promise<void> {
+    await this.ctx.storage.put('gameState', this.session.state);
+  }
 
   private sockets(): { ws: WebSocket; att: Attachment }[] {
     return this.ctx
@@ -92,7 +108,7 @@ export class RoomDO implements DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): void {
+  async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
 
@@ -114,6 +130,7 @@ export class RoomDO implements DurableObject {
         send(ws, { t: 'error', code: 'illegal_move', message: result.error });
         return;
       }
+      await this.persistState();
       this.broadcast({ t: 'state', state: result.value });
       if (result.value.winner !== null) {
         this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
@@ -123,6 +140,7 @@ export class RoomDO implements DurableObject {
 
     if (parsed.t === 'resign') {
       const state = this.session.resign(att.seat);
+      await this.persistState();
       this.broadcast({ t: 'state', state });
       if (state.winner !== null) {
         this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'resign' });
@@ -136,6 +154,7 @@ export class RoomDO implements DurableObject {
         const opponent = this.other(att.seat);
         if (opponent) send(opponent.ws, { t: 'rematchOffered' });
       } else {
+        await this.persistState();
         this.broadcast({ t: 'rematchAgreed' });
         this.broadcast({ t: 'state', state: this.session.state });
       }
@@ -143,7 +162,7 @@ export class RoomDO implements DurableObject {
     }
 
     if (parsed.t === 'rejoin') {
-      this.handleRejoin(ws, att);
+      await this.handleRejoin(ws, att);
       return;
     }
   }
@@ -184,6 +203,7 @@ export class RoomDO implements DurableObject {
     if (!stillDisconnected) return;
 
     const state = this.session.resign(pending.seat);
+    await this.persistState();
     this.broadcast({ t: 'state', state });
     if (state.winner !== null) {
       this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'disconnect' });
