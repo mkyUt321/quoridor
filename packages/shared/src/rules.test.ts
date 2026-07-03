@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState } from './game.js';
-import { canStep, hasPath, legalPawnMoves, wallConflict, wallLegal } from './rules.js';
+import { bestMoveTowardGoal, canStep, hasPath, legalPawnMoves, wallConflict, wallLegal } from './rules.js';
 import type { GameState, Position, Wall } from './types.js';
 
 function withState(overrides: Partial<GameState> = {}): GameState {
@@ -180,5 +180,50 @@ describe('wallLegal', () => {
       ],
     });
     expect(wallLegal(state, { r: 0, c: 6, o: 'H' })).toBe(true);
+  });
+});
+
+describe('bestMoveTowardGoal', () => {
+  it('壁がなければ直進でゴールへ最短距離が縮むマスを選ぶ', () => {
+    const state = createInitialState(); // P1: (8,4) -> goal row 0
+    const move = bestMoveTowardGoal(state, 0);
+    expect(move).toEqual({ r: 7, c: 4 });
+  });
+
+  it('直進が壁で塞がれていれば別の合法手(かつ塞がれた直進先ではない)を選ぶ', () => {
+    const state = withState({
+      pawns: [
+        { r: 4, c: 4 },
+        { r: 0, c: 4 },
+      ],
+      walls: [{ r: 3, c: 3, o: 'H' }, { r: 3, c: 4, o: 'H' }],
+    });
+    const move = bestMoveTowardGoal(state, 0);
+    expect(move).not.toEqual({ r: 3, c: 4 });
+    expect(legalPawnMoves(state, 0)).toEqual(expect.arrayContaining([move]));
+  });
+
+  it('隣接する相手をジャンプすればゴールへより縮むならジャンプを選ぶ', () => {
+    const state = withState({
+      pawns: [
+        { r: 4, c: 4 },
+        { r: 3, c: 4 },
+      ],
+    });
+    const move = bestMoveTowardGoal(state, 0);
+    expect(move).toEqual({ r: 2, c: 4 });
+  });
+
+  it('既にゴール行に到達していれば距離0のまま合法手の中から選ぶ', () => {
+    const state = withState({
+      pawns: [
+        { r: 0, c: 4 },
+        { r: 8, c: 4 },
+      ],
+    });
+    const move = bestMoveTowardGoal(state, 0);
+    // ゴール行(0)からの移動なので、どこへ動いても距離は1以上に増える。
+    // 単に合法手のいずれかが返ることだけを確認する(既にゴール済みなら通常呼ばれない状況)。
+    expect(legalPawnMoves(state, 0)).toEqual(expect.arrayContaining([move]));
   });
 });

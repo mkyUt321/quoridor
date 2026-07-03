@@ -1,4 +1,4 @@
-import { isClientMsg, type GameState, type PlayerId, type ServerMsg } from '@quoridor/shared';
+import { bestMoveTowardGoal, isClientMsg, type GameState, type PlayerId, type ServerMsg } from '@quoridor/shared';
 import { Session } from './session.js';
 
 interface Attachment {
@@ -220,7 +220,12 @@ export class RoomDO implements DurableObject {
     }
   }
 
-  /** クライアントからの「相手の持ち時間が切れた」という申告をサーバ側で再計算して検証する。 */
+  /**
+   * クライアントからの「手番側の持ち時間が切れた」という申告をサーバ側で再計算して検証する。
+   * 時間切れは対局を終わらせず、ゴールへの最短経路のマスへ自動的に一手進めて手番を渡す
+   * (ゲーム性を保つため、即敗北にはしない)。時間切れが続く限り、その席は以後も
+   * 自動移動が繰り返される。
+   */
   private async handleClaimTimeout(): Promise<void> {
     if (this.session.state.winner !== null) return;
     const mover = this.session.state.turn;
@@ -228,11 +233,17 @@ export class RoomDO implements DurableObject {
     const effectiveRemaining = this.remainingMs[mover] - elapsed;
     if (effectiveRemaining > 0) return;
 
-    const state = this.session.resign(mover);
+    const to = bestMoveTowardGoal(this.session.state, mover);
+    const result = this.session.move({ type: 'pawn', to }, mover);
+    if (!result.ok) return;
+
+    this.tickClock(mover);
     await this.persistState();
-    this.broadcast({ t: 'state', state });
-    if (state.winner !== null) {
-      this.broadcast({ t: 'gameOver', winner: state.winner, reason: 'timeout' });
+    await this.persistClock();
+    this.broadcast({ t: 'state', state: result.value });
+    this.broadcast(this.clockMsg());
+    if (result.value.winner !== null) {
+      this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
     }
   }
 

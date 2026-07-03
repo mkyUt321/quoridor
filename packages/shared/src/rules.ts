@@ -121,3 +121,52 @@ export function wallLegal(state: GameState, w: Wall): boolean {
   }
   return true;
 }
+
+/** 壁配置を考慮した、各マスからゴール行までの最短手数(BFS)。goalRow から逆向きに広げる。 */
+function distanceToGoalRow(walls: readonly Wall[], goalRow: number): number[][] {
+  const dist: number[][] = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(Infinity));
+  const queue: Position[] = [];
+  for (let c = 0; c < BOARD_SIZE; c++) {
+    dist[goalRow]![c] = 0;
+    queue.push({ r: goalRow, c });
+  }
+
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
+    for (const [dr, dc] of DIRS) {
+      const nr = cur.r + dr;
+      const nc = cur.c + dc;
+      if (!inBounds(nr, nc)) continue;
+      if (!canStep(walls, cur.r, cur.c, nr, nc)) continue;
+      if (dist[nr]![nc]! > dist[cur.r]![cur.c]! + 1) {
+        dist[nr]![nc] = dist[cur.r]![cur.c]! + 1;
+        queue.push({ r: nr, c: nc });
+      }
+    }
+  }
+  return dist;
+}
+
+/**
+ * 手番プレイヤーの合法な移動先の中から、ゴール行までの最短距離が最も縮むマスを選ぶ。
+ * 持ち時間切れ時の自動移動に使う。hasPath が保たれている限り legalPawnMoves は必ず
+ * 1つ以上あるため、常に有効な移動先を返す。
+ */
+export function bestMoveTowardGoal(state: GameState, who: PlayerId): Position {
+  const legal = legalPawnMoves(state, who);
+  const first = legal[0];
+  if (!first) throw new Error('bestMoveTowardGoal: no legal moves available');
+
+  const dist = distanceToGoalRow(state.walls, state.goal[who]);
+  let best = first;
+  let bestDist = dist[first.r]![first.c]!;
+  for (const m of legal) {
+    const d = dist[m.r]![m.c]!;
+    if (d < bestDist) {
+      bestDist = d;
+      best = m;
+    }
+  }
+  return best;
+}
