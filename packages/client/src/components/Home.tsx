@@ -38,8 +38,13 @@ export function Home({ onJoinPass, onJoinQuick, onJoinCpu, error }: Props) {
         />
       </label>
       <div className="home-actions">
-        <button type="button" disabled={pass.trim() === ''} onClick={() => onJoinPass(pass, commitNick())}>
-          対戦する
+        <button
+          type="button"
+          className="wide"
+          disabled={pass.trim() === ''}
+          onClick={() => onJoinPass(pass, commitNick())}
+        >
+          あいことばで対戦する
         </button>
         <button type="button" className="secondary" onClick={() => onJoinQuick(commitNick())}>
           ランダム対戦
