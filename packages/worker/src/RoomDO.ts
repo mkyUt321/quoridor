@@ -2,8 +2,11 @@ import {
   bestMoveTowardGoal,
   chooseAiMove,
   isClientMsg,
+  shortestPathLength,
   type GameState,
+  type Move,
   type PlayerId,
+  type Position,
   type ServerMsg,
 } from '@quoridor/shared';
 import { Session } from './session.js';
@@ -34,6 +37,14 @@ const HUMAN_SEAT: PlayerId = 0;
 const CPU_SEAT: PlayerId = 1;
 /** CPU が指すまでの見かけ上の「考慮時間」。即指しは不自然なので少し待たせる。 */
 const CPU_MOVE_DELAY_MS = 600;
+/** CPU の同じマス往復を抑止するために覚えておく、直近の自分の位置の数。 */
+const CPU_RECENT_SQUARES = 3;
+/**
+ * 両者が壁を使い切った後の自動レース(auto-race)における、一手ごとの間隔。
+ * この局面はもう戦略的選択肢がなく(壁が置けない以上、各自最短経路を進む以外に
+ * 意味のある手がない)、CPU戦に限らず全モードで自動的に進行させる。
+ */
+const AUTO_RACE_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,6 +65,14 @@ export class RoomDO implements DurableObject {
   private turnStartedAt = Date.now();
   /** この部屋が対 CPU 戦か。true の間は席 1 を CPU が担当し、持ち時間は無効化される。 */
   private cpuMode = false;
+  /**
+   * CPU(席1)が直近にいたマスの履歴(古い→新しい順、最大 CPU_RECENT_SQUARES 件)。
+   * chooseAiMove の逆戻り抑止ヒントに使う。ヒューリスティックの補助情報でしかなく、
+   * ハイバネート復帰後にリセットされても実害が小さいため永続化はしない。
+   */
+  private cpuRecentSquares: Position[] = [];
+  /** 自動レース(両者壁切れ後の自動進行)が実行中かどうか。多重起動を防ぐガード。 */
+  private autoRacing = false;
 
   constructor(
     private ctx: DurableObjectState,
@@ -72,6 +91,10 @@ export class RoomDO implements DurableObject {
         this.turnStartedAt = clock.turnStartedAt;
       }
       this.cpuMode = (await this.ctx.storage.get<boolean>('cpuMode')) === true;
+      // ハイバネート復帰時、たまたま自動レースの最中に眠っていた場合に備えて再開を
+      // 試みる(通常は数秒で終わる短い処理なので、実際に復帰後発火する頻度は低い)。
+      // blockConcurrencyWhile 自体をここで長時間ブロックしないよう await しない。
+      void this.maybeRunAutoRace();
     });
   }
 
@@ -215,6 +238,15 @@ export class RoomDO implements DurableObject {
    * 手番が CPU(席1)なら一手指して結果をブロードキャストする。delayMs > 0 のときは
    * 見かけ上の思考時間として少し待ってから指す。CPU 対戦以外・手番でない・決着済みの
    * ときは何もしない。
+   *
+   * CPU 自身の壁を使い切った後は、CPU に残された選択肢は実質「最短経路を進む」
+   * ことだけになる(壁が置けない以上、探索するまでもない)。この局面では
+   * chooseAiMove の代わりに bestMoveTowardGoal を直接使い、確実に最短経路を
+   * 進ませる(探索の水平線効果による横移動・足踏みを構造的に防ぐ)。さらに、
+   * 壁は経路を長くすることはあっても短くすることはないため、相手がまだ壁を
+   * 持っていても「現在の最短距離同士の比較で既に負けているなら、相手の残り壁
+   * でこちらが有利になることは絶対にない」と完全に判定できる。この場合は
+   * 潔く投了する。
    */
   private async runCpuTurn(delayMs: number): Promise<void> {
     if (!this.cpuMode) return;
@@ -223,14 +255,69 @@ export class RoomDO implements DurableObject {
 
     if (delayMs > 0) await sleep(delayMs);
 
-    const move = chooseAiMove(this.session.state, CPU_SEAT, { rng: Math.random });
+    const state = this.session.state;
+    let move: Move;
+    if (state.wallsLeft[CPU_SEAT] === 0) {
+      const myDist = shortestPathLength(state.walls, state.pawns[CPU_SEAT], state.goal[CPU_SEAT]);
+      const oppDist = shortestPathLength(state.walls, state.pawns[HUMAN_SEAT], state.goal[HUMAN_SEAT]);
+      if (myDist > oppDist) {
+        const finalState = this.session.resign(CPU_SEAT);
+        await this.persistState();
+        this.broadcast({ t: 'state', state: finalState });
+        this.broadcast({ t: 'gameOver', winner: finalState.winner!, reason: 'resign' });
+        return;
+      }
+      move = { type: 'pawn', to: bestMoveTowardGoal(state, CPU_SEAT) };
+    } else {
+      move = chooseAiMove(state, CPU_SEAT, {
+        rng: Math.random,
+        recentOwnSquares: this.cpuRecentSquares,
+      });
+    }
+
     const result = this.session.move(move, CPU_SEAT);
     if (!result.ok) return;
 
+    if (move.type === 'pawn') {
+      this.cpuRecentSquares.push(move.to);
+      if (this.cpuRecentSquares.length > CPU_RECENT_SQUARES) this.cpuRecentSquares.shift();
+    }
     await this.persistState();
     this.broadcast({ t: 'state', state: result.value });
     if (result.value.winner !== null) {
       this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
+      return;
+    }
+    await this.maybeRunAutoRace();
+  }
+
+  /**
+   * 双方が壁を使い切ったら、以後は両者ともゴールまでの最短経路を自動的に進める。
+   * 壁が置けない以上、手動操作しても選ぶべき手は毎回ただ1つ(最短経路)に決まって
+   * おり、対人戦・CPU戦を問わずこの局面は「決着が見えている作業」でしかないため、
+   * 自動で決着まで進行させる。多重起動しないよう autoRacing フラグで保護する。
+   */
+  private async maybeRunAutoRace(): Promise<void> {
+    if (this.autoRacing) return;
+    if (this.session.state.winner !== null) return;
+    if (this.session.state.wallsLeft[0] !== 0 || this.session.state.wallsLeft[1] !== 0) return;
+
+    this.autoRacing = true;
+    try {
+      while (this.session.state.winner === null) {
+        await sleep(AUTO_RACE_DELAY_MS);
+        const mover = this.session.state.turn;
+        const to = bestMoveTowardGoal(this.session.state, mover);
+        const result = this.session.move({ type: 'pawn', to }, mover);
+        if (!result.ok) break; // 理論上起きないが保険
+        await this.persistState();
+        this.broadcast({ t: 'state', state: result.value });
+        if (result.value.winner !== null) {
+          this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
+        }
+      }
+    } finally {
+      this.autoRacing = false;
     }
   }
 
@@ -265,8 +352,13 @@ export class RoomDO implements DurableObject {
         this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
         return;
       }
-      // 人間の手が決着でなければ、CPU の応手を(思考時間ぶん待ってから)返す。
-      await this.runCpuTurn(CPU_MOVE_DELAY_MS);
+      if (this.cpuMode) {
+        // 人間の手が決着でなければ、CPU の応手を(思考時間ぶん待ってから)返す。
+        await this.runCpuTurn(CPU_MOVE_DELAY_MS);
+      } else {
+        // 対人戦でもこの手で双方が壁を使い切ったなら、以後は自動レースに切り替える。
+        await this.maybeRunAutoRace();
+      }
       return;
     }
 
@@ -285,6 +377,7 @@ export class RoomDO implements DurableObject {
         // CPU 対戦の「もう一局」は相手の同意を待たず即リセット。人間(席0)が先手なので
         // ここで CPU が指すことはない。
         this.session.reset();
+        this.cpuRecentSquares = [];
         await this.persistState();
         this.broadcast({ t: 'rematchAgreed' });
         this.broadcast({ t: 'state', state: this.session.state });
