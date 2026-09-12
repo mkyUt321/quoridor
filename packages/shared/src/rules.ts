@@ -123,7 +123,7 @@ export function wallLegal(state: GameState, w: Wall): boolean {
 }
 
 /** 壁配置を考慮した、各マスからゴール行までの最短手数(BFS)。goalRow から逆向きに広げる。 */
-function distanceToGoalRow(walls: readonly Wall[], goalRow: number): number[][] {
+export function distanceToGoalRow(walls: readonly Wall[], goalRow: number): number[][] {
   const dist: number[][] = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(Infinity));
   const queue: Position[] = [];
   for (let c = 0; c < BOARD_SIZE; c++) {
@@ -146,6 +146,15 @@ function distanceToGoalRow(walls: readonly Wall[], goalRow: number): number[][] 
     }
   }
   return dist;
+}
+
+/**
+ * 壁配置を考慮した、あるマス from からゴール行 goalRow までの最短手数。
+ * 到達不能なら Infinity。AI の盤面評価(ゴールまでの距離差)で使う。
+ */
+export function shortestPathLength(walls: readonly Wall[], from: Position, goalRow: number): number {
+  const dist = distanceToGoalRow(walls, goalRow);
+  return dist[from.r]![from.c]!;
 }
 
 /**

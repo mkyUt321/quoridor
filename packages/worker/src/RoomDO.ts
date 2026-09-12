@@ -1,4 +1,11 @@
-import { bestMoveTowardGoal, isClientMsg, type GameState, type PlayerId, type ServerMsg } from '@quoridor/shared';
+import {
+  bestMoveTowardGoal,
+  chooseAiMove,
+  isClientMsg,
+  type GameState,
+  type PlayerId,
+  type ServerMsg,
+} from '@quoridor/shared';
 import { Session } from './session.js';
 
 interface Attachment {
@@ -22,6 +29,16 @@ const FREE_MS = 60_000;
 /** 無料枠を超えた分だけ消費される、繰り越し式の予備時間(使った分は戻らない)。 */
 const DEFAULT_BANK_MS = 2 * 60_000;
 
+/** CPU 対戦での人間の席。CPU は常に席 1。 */
+const HUMAN_SEAT: PlayerId = 0;
+const CPU_SEAT: PlayerId = 1;
+/** CPU が指すまでの見かけ上の「考慮時間」。即指しは不自然なので少し待たせる。 */
+const CPU_MOVE_DELAY_MS = 600;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface Env {
   ROOM: DurableObjectNamespace;
   LOBBY: DurableObjectNamespace;
@@ -35,6 +52,8 @@ export class RoomDO implements DurableObject {
   private session = new Session();
   private bankMs: [number, number] = [DEFAULT_BANK_MS, DEFAULT_BANK_MS];
   private turnStartedAt = Date.now();
+  /** この部屋が対 CPU 戦か。true の間は席 1 を CPU が担当し、持ち時間は無効化される。 */
+  private cpuMode = false;
 
   constructor(
     private ctx: DurableObjectState,
@@ -52,6 +71,7 @@ export class RoomDO implements DurableObject {
         this.bankMs = clock.bankMs;
         this.turnStartedAt = clock.turnStartedAt;
       }
+      this.cpuMode = (await this.ctx.storage.get<boolean>('cpuMode')) === true;
     });
   }
 
@@ -119,24 +139,48 @@ export class RoomDO implements DurableObject {
     const url = new URL(request.url);
     const name = url.searchParams.get('name') ?? '名無し';
 
+    // CPU 対戦は最初の接続の ?cpu=1 で確定し、以後 storage に永続化する
+    // (ハイバネート復帰・再接続でも維持されるように)。
+    if (url.searchParams.get('cpu') === '1' && !this.cpuMode) {
+      this.cpuMode = true;
+      await this.ctx.storage.put('cpuMode', true);
+    }
+
     const occupied = new Set(this.sockets().map((s) => s.att.seat));
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
 
-    if (occupied.size >= 2) {
+    // CPU 対戦では人間は席 0 の1人だけ。対人戦では2席まで。
+    const full = this.cpuMode ? occupied.has(HUMAN_SEAT) : occupied.size >= 2;
+    if (full) {
       this.ctx.acceptWebSocket(server);
       send(server, { t: 'error', code: 'room_full', message: 'この部屋は満員です' });
       server.close(1000, 'room_full');
       return new Response(null, { status: 101, webSocket: client });
     }
 
-    const seat: PlayerId = occupied.has(0) ? 1 : 0;
+    const seat: PlayerId = this.cpuMode ? HUMAN_SEAT : occupied.has(0) ? 1 : 0;
     const token = crypto.randomUUID();
     server.serializeAttachment({ seat, token, name } satisfies Attachment);
     this.ctx.acceptWebSocket(server, [`seat:${seat}`]);
     await this.clearPendingDisconnect(seat);
+
+    if (this.cpuMode) {
+      // 相手(CPU)の接続を待たずに即マッチ成立。持ち時間は無効なので clock は送らない。
+      send(server, {
+        t: 'matched',
+        you: HUMAN_SEAT,
+        token,
+        opponent: 'CPU',
+        state: this.session.state,
+      });
+      // 進行中局面での再接続で、既に手番が CPU 側なら詰まらないようここで指させる
+      // (応答を返す前にブロックしないよう遅延なしで実行)。
+      await this.runCpuTurn(0);
+      return new Response(null, { status: 101, webSocket: client });
+    }
 
     const opponent = this.other(seat);
     if (opponent) {
@@ -167,6 +211,29 @@ export class RoomDO implements DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /**
+   * 手番が CPU(席1)なら一手指して結果をブロードキャストする。delayMs > 0 のときは
+   * 見かけ上の思考時間として少し待ってから指す。CPU 対戦以外・手番でない・決着済みの
+   * ときは何もしない。
+   */
+  private async runCpuTurn(delayMs: number): Promise<void> {
+    if (!this.cpuMode) return;
+    if (this.session.state.winner !== null) return;
+    if (this.session.state.turn !== CPU_SEAT) return;
+
+    if (delayMs > 0) await sleep(delayMs);
+
+    const move = chooseAiMove(this.session.state, CPU_SEAT, { rng: Math.random });
+    const result = this.session.move(move, CPU_SEAT);
+    if (!result.ok) return;
+
+    await this.persistState();
+    this.broadcast({ t: 'state', state: result.value });
+    if (result.value.winner !== null) {
+      this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
+    }
+  }
+
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
@@ -189,14 +256,17 @@ export class RoomDO implements DurableObject {
         send(ws, { t: 'error', code: 'illegal_move', message: result.error });
         return;
       }
-      this.tickClock(att.seat);
+      if (!this.cpuMode) this.tickClock(att.seat);
       await this.persistState();
-      await this.persistClock();
+      if (!this.cpuMode) await this.persistClock();
       this.broadcast({ t: 'state', state: result.value });
-      this.broadcast(this.clockMsg());
+      if (!this.cpuMode) this.broadcast(this.clockMsg());
       if (result.value.winner !== null) {
         this.broadcast({ t: 'gameOver', winner: result.value.winner, reason: 'goal' });
+        return;
       }
+      // 人間の手が決着でなければ、CPU の応手を(思考時間ぶん待ってから)返す。
+      await this.runCpuTurn(CPU_MOVE_DELAY_MS);
       return;
     }
 
@@ -211,6 +281,15 @@ export class RoomDO implements DurableObject {
     }
 
     if (parsed.t === 'rematch') {
+      if (this.cpuMode) {
+        // CPU 対戦の「もう一局」は相手の同意を待たず即リセット。人間(席0)が先手なので
+        // ここで CPU が指すことはない。
+        this.session.reset();
+        await this.persistState();
+        this.broadcast({ t: 'rematchAgreed' });
+        this.broadcast({ t: 'state', state: this.session.state });
+        return;
+      }
       const vote = this.session.requestRematch(att.seat);
       if (vote === 'offered') {
         const opponent = this.other(att.seat);
@@ -274,7 +353,7 @@ export class RoomDO implements DurableObject {
   private async handleRejoin(ws: WebSocket, att: Attachment): Promise<void> {
     await this.clearPendingDisconnect(att.seat);
     send(ws, { t: 'state', state: this.session.state });
-    send(ws, this.clockMsg());
+    if (!this.cpuMode) send(ws, this.clockMsg());
     const opponent = this.other(att.seat);
     if (opponent) send(opponent.ws, { t: 'opponentBack' });
   }
@@ -282,6 +361,9 @@ export class RoomDO implements DurableObject {
   async webSocketClose(ws: WebSocket): Promise<void> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
+    // CPU 対戦には切断猶予・自動投了はない。人間が離脱しても局面は storage に残り、
+    // 同じ部屋へ再接続すれば続きから再開できる(放置されればそのまま消える)。
+    if (this.cpuMode) return;
     const opponent = this.other(att.seat);
     if (!opponent || this.session.state.winner !== null) return;
 

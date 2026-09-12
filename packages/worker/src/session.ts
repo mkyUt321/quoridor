@@ -33,4 +33,10 @@ export class Session {
     this.state = createInitialState();
     return 'agreed';
   }
+
+  /** 相手の同意を待たずに初期局面へ戻す(CPU 対戦の「もう一局」用)。 */
+  reset(): void {
+    this.rematchVotes.clear();
+    this.state = createInitialState();
+  }
 }

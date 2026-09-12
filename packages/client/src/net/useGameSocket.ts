@@ -7,6 +7,7 @@ interface PersistedSession {
   room: string;
   name: string;
   token: string;
+  cpu: boolean;
 }
 
 function savePersistedSession(session: PersistedSession): void {
@@ -85,13 +86,17 @@ export function useGameSocket() {
   const roomRef = useRef<string | null>(null);
   const nameRef = useRef<string>('');
   const tokenRef = useRef<string | null>(null);
+  const cpuRef = useRef(false);
   const intentionalCloseRef = useRef(false);
   const backoffRef = useRef(MIN_BACKOFF_MS);
 
   const openSocket = useCallback(() => {
     const room = roomRef.current;
     if (!room) return;
-    const ws = new WebSocket(wsUrl(`/ws?room=${encodeURIComponent(room)}&name=${encodeURIComponent(nameRef.current)}`));
+    const cpuParam = cpuRef.current ? '&cpu=1' : '';
+    const ws = new WebSocket(
+      wsUrl(`/ws?room=${encodeURIComponent(room)}&name=${encodeURIComponent(nameRef.current)}${cpuParam}`),
+    );
     wsRef.current = ws;
 
     ws.addEventListener('open', () => {
@@ -115,7 +120,12 @@ export function useGameSocket() {
         case 'matched':
           tokenRef.current = parsed.token;
           if (roomRef.current) {
-            savePersistedSession({ room: roomRef.current, name: nameRef.current, token: parsed.token });
+            savePersistedSession({
+              room: roomRef.current,
+              name: nameRef.current,
+              token: parsed.token,
+              cpu: cpuRef.current,
+            });
           }
           setState((s) => ({
             ...s,
@@ -174,7 +184,7 @@ export function useGameSocket() {
   }, []);
 
   const connectRoom = useCallback(
-    (room: string, name: string) => {
+    (room: string, name: string, cpu = false) => {
       // 対局終了後に再びクイックマッチへ入る等、既存の接続がある状態で呼ばれることもある。
       // ここで明示的に閉じておかないと古い接続が残り続ける(close イベントは古い ws 自身の
       // 参照と wsRef.current を比較して判定するため、先に wsRef.current を差し替えても
@@ -183,6 +193,7 @@ export function useGameSocket() {
       roomRef.current = room;
       nameRef.current = name;
       tokenRef.current = null;
+      cpuRef.current = cpu;
       intentionalCloseRef.current = false;
       backoffRef.current = MIN_BACKOFF_MS;
       setState({ ...initialState, phase: 'waiting', you: name });
@@ -200,6 +211,7 @@ export function useGameSocket() {
     roomRef.current = saved.room;
     nameRef.current = saved.name;
     tokenRef.current = saved.token;
+    cpuRef.current = saved.cpu === true;
     intentionalCloseRef.current = false;
     backoffRef.current = MIN_BACKOFF_MS;
     setState({ ...initialState, phase: 'waiting', you: saved.name });
@@ -226,6 +238,11 @@ export function useGameSocket() {
     [connectRoom],
   );
 
+  const joinCpu = useCallback(
+    (name: string) => connectRoom(`cpu:${crypto.randomUUID()}`, name, true),
+    [connectRoom],
+  );
+
   const send = useCallback((msg: ClientMsg) => {
     if (msg.t === 'rematch') {
       setState((s) => ({ ...s, rematchRequestedByMe: true }));
@@ -243,5 +260,5 @@ export function useGameSocket() {
     setState(initialState);
   }, []);
 
-  return { ...state, joinPass, joinQuick, send, leave };
+  return { ...state, joinPass, joinQuick, joinCpu, send, leave };
 }

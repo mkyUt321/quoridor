@@ -5,10 +5,11 @@ import { RulesToggle } from './RulesToggle.js';
 interface Props {
   onJoinPass: (pass: string, name: string) => void;
   onJoinQuick: (name: string) => void;
+  onJoinCpu: (name: string) => void;
   error: string | null;
 }
 
-export function Home({ onJoinPass, onJoinQuick, error }: Props) {
+export function Home({ onJoinPass, onJoinQuick, onJoinCpu, error }: Props) {
   const [nick, setNick] = useState(loadNickname());
   const [pass, setPass] = useState('');
 
@@ -21,7 +22,7 @@ export function Home({ onJoinPass, onJoinQuick, error }: Props) {
   return (
     <div className="home-card">
       <h1>Quoridor</h1>
-      <p className="sub">合言葉を決めて、相手と同じ言葉を入力すると出会います。合言葉なしでランダム対戦も選べます。</p>
+      <p className="sub">合言葉を決めて、相手と同じ言葉を入力すると出会います。合言葉なしのランダム対戦や、CPU対戦も選べます。</p>
       <label>
         ニックネーム
         <input value={nick} onChange={(e) => setNick(e.target.value)} maxLength={16} autoComplete="off" />
@@ -42,6 +43,9 @@ export function Home({ onJoinPass, onJoinQuick, error }: Props) {
         </button>
         <button type="button" className="secondary" onClick={() => onJoinQuick(commitNick())}>
           ランダム対戦
+        </button>
+        <button type="button" className="secondary" onClick={() => onJoinCpu(commitNick())}>
+          CPU対戦
         </button>
       </div>
       {error && <p className="error">{error}</p>}
