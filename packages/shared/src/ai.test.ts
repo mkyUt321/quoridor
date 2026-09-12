@@ -68,8 +68,8 @@ describe('chooseAiMove', () => {
   });
 
   it('rng を渡さなければ決定的(同じ入力で同じ手)', () => {
-    // depth を明示して高速化する(既定経路のノード数予算ベース反復深化も決定的だが、
-    // 1回あたり最大1秒近くかかるためテストが遅くなる)。
+    // depth を明示して高速化する(既定経路のノード数予算ベース探索も決定的だが、
+    // 1回あたり数百ms前後かかりテストが遅くなる)。
     const state = createInitialState();
     const a = chooseAiMove(state, 0, { depth: 2 });
     const b = chooseAiMove(state, 0, { depth: 2 });
@@ -116,17 +116,18 @@ describe('chooseAiMove', () => {
     }
   });
 
-  it('既定経路(depth省略時のノード数予算ベース反復深化)でも合法手を返し、概ね1秒程度に収まる', () => {
-    // ノード数予算(既定24,000)は Node.js 上で概ね1秒前後に収まるよう実測で調整した
-    // 値。performance.now() ベースの時間予算は Cloudflare Workers がタイマーを凍結
-    // するため機能せず、ノード数ベースに変更した経緯がある(ai.ts のコメント参照)。
+  it('既定経路(depth省略時のノード数予算ベース段階的縮退探索)でも合法手を返し、高速に収まる', () => {
+    // ノード数予算(既定10,000)は Node.js 上で概ね数百ms程度に収まるよう実測で調整
+    // した値。performance.now() ベースの時間予算は Cloudflare Workers がタイマーを
+    // 凍結するため機能せず、ノード数ベースの段階的縮退方式に変更した経緯がある
+    // (ai.ts のコメント参照)。
     const state = createInitialState();
     const t0 = performance.now();
     const move = chooseAiMove(state, 0);
     const elapsed = performance.now() - t0;
     const res = applyMove(state, move, 0);
     expect(res.ok).toBe(true);
-    expect(elapsed).toBeLessThan(2000);
+    expect(elapsed).toBeLessThan(1500);
   });
 });
 

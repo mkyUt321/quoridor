@@ -5,22 +5,31 @@ import type { GameState, Move, PlayerId, Position, Wall } from './types.js';
 /** 勝敗が確定した局面の評価値。通常の距離差評価より十分大きくして常に優先させる。 */
 const WIN_SCORE = 1_000_000;
 /**
- * depth を明示しない既定経路での探索ノード数の予算。この予算内で完了した最も深い
- * 反復深化(iterative deepening)の結果を使う。
+ * depth を明示しない既定経路での探索ノード数の予算。
  *
  * 当初は performance.now() ベースの時間予算(deadline)で打ち切る設計にしていたが、
  * Cloudflare Workers は Spectre 系タイミング攻撃対策として、1回の同期実行の間
  * performance.now()/Date.now() の値を凍結する(次の I/O 等まで進まない)ため、
  * 再帰探索の途中で時間切れを検知できず、実質的に無制限に近い時間がかかってしまう
- * ことが実測で判明した(depth3〜4 相当の探索が10秒以上かかるケースがあった)。
- * ノード数ベースの予算なら時計に依存しないため、Node.js でも Cloudflare Workers
- * でも同じ「量」で確実に打ち切れる。しきい値は Node.js 上で既定経路が概ね1秒前後に
- * 収まるよう実測で調整してある(Workers は1ノードあたりの実行がより遅いため、同じ
- * ノード数でも実時間は長くなるが、無制限だった以前と違い有限に収まる)。
+ * ことが実測で判明した。ノード数ベースの予算なら時計に依存しない。
+ *
+ * さらに当初のノード数予算版は「depth=2 で完了 → depth=3 に新しい予算で再挑戦 →
+ * 予算切れなら破棄して depth=2 の結果に戻る」という反復深化だったため、途中で
+ * 予算切れになった深さの探索がまるごと無駄になっていた(本番Workersでの実測で、
+ * 1手あたり3〜4秒と体感でも無視できない遅延になっていた)。
+ *
+ * 現在の設計は使い捨てをやめ、1回のパスだけで完結する「段階的縮退(graceful
+ * degradation)」方式にした: 探索木の各ノードで budget が尽きたら、その枝はそこで
+ * evaluate() を返して打ち切る(例外で全体を巻き戻すのではなく、その場で浅い評価に
+ *切り替えるだけ)。手の並び替え(orderedMoves)で有望な手を先に評価するため、
+ * budget が潤沢なうちに最有力候補が深く読まれ、budget が減ってから調べる残りの
+ * (あまり有望でない)候補は浅い評価で済ませても実害が小さい。消費した budget は
+ * 必ず最終的な手の選択に反映されるため、以前のような「予算を使ったのに結果を
+ * 丸ごと捨てる」無駄が構造的に起きない。
  */
-const DEFAULT_NODE_BUDGET = 24_000;
-/** 反復深化で試す最大深さ(ノード予算に余裕があっても際限なく深追いしない安全弁)。 */
-const MAX_ITERATIVE_DEPTH = 4;
+const DEFAULT_NODE_BUDGET = 10_000;
+/** 探索する最大深さ(budget に余裕があっても際限なく深追いしない安全弁)。 */
+const MAX_SEARCH_DEPTH = 4;
 /** 相手コマ周辺で壁候補として検討するアンカーのチェビシェフ半径。 */
 const OPP_WALL_RADIUS = 2;
 /** 自分コマ周辺で壁候補として検討するアンカーのチェビシェフ半径(防御的な壁用)。 */
@@ -35,14 +44,24 @@ const SELF_WALL_RADIUS = 1;
  * 素通りしにいくことを防ぐ(禁じ手ではなく減点なので、差が大きければ選ばれ得る)。
  */
 const REVISIT_PENALTY = 18;
+/**
+ * ルート(手番プレイヤー自身の手を選ぶ最上位呼び出し)で、壁候補のうち実際に
+ * budget を割り振って深く探索する上位候補の数。壁候補は最大で50〜70通りにも
+ * なるため、これを全部均等に budget 分割すると1候補あたりの budget が小さすぎて
+ * 意味のある読みができない(相手の応手まで見る前に打ち切られ、雑な評価しか
+ * 得られない)。着手直後の静的評価(evaluate、1手先読みなし)で軽く足切りしてから
+ * 上位だけを本探索にかけることで、少ない budget でも意味のある比較にする。
+ */
+const ROOT_WALL_CANDIDATE_LIMIT = 6;
 
 export interface AiOptions {
   /**
    * 探索深さを固定したい場合に指定する(主にテスト・決定的な挙動が必要な場面用)。
-   * 省略すると maxNodes によるノード数予算ベースの反復深化(既定経路)になる。
+   * 指定するとノード数無制限(budget なし)の固定深さ探索になる。
+   * 省略すると maxNodes によるノード数予算ベースの探索(既定経路)になる。
    */
   depth?: number;
-  /** depth 省略時のノード数予算。既定 24,000。 */
+  /** depth 省略時のノード数予算。既定 10,000。 */
   maxNodes?: number;
   /** 同点最善手が複数あるときのタイブレーク用乱数。省略時は決定的(先頭を選ぶ)。 */
   rng?: () => number;
@@ -53,10 +72,8 @@ export interface AiOptions {
   recentOwnSquares?: readonly Position[];
 }
 
-/** ノード数予算を使い切って探索を打ち切ったことを示す内部シグナル。 */
-class SearchAborted extends Error {}
-
-/** 探索中に消費したノード数を数える可変カウンタ。 */
+/** 探索中に消費したノード数を数える可変カウンタ。remaining<=0 になったら以後は
+ *  即座に evaluate() へ縮退する(段階的縮退。例外は使わない)。 */
 interface NodeBudget {
   remaining: number;
 }
@@ -92,9 +109,9 @@ export function evaluate(state: GameState, who: PlayerId): number {
  * wallLegal を通ったものだけを返す。
  *
  * wallLegal 1回につき内部で BFS(hasPath)を2回行っており、探索全体の中で圧倒的に
- * 重い処理はここに集中している(高々数手のミニマックス「ノード数」を数えるだけでは
- * この重さを反映できず、budget が実際の計算量にほとんど比例しなかった)。そのため
- * budget の消費はここ、wallLegal を試すたびに行う。
+ * 重い処理はここに集中している。budget が尽きたら、その時点までに見つかった候補
+ * だけを返して打ち切る(例外は投げない。ここまでの候補で十分に手を選べるため、
+ * 打ち切りは単なる縮退であって失敗ではない)。
  */
 function candidateWalls(state: GameState, mover: PlayerId, budget: NodeBudget): Wall[] {
   if (state.wallsLeft[mover] <= 0) return [];
@@ -110,7 +127,8 @@ function candidateWalls(state: GameState, mover: PlayerId, budget: NodeBudget): 
         chebyshev(r, c, me.r, me.c) <= SELF_WALL_RADIUS;
       if (!near) continue;
       for (const o of orientations) {
-        if (--budget.remaining <= 0) throw new SearchAborted();
+        if (budget.remaining <= 0) return walls;
+        budget.remaining--;
         const w: Wall = { r, c, o };
         if (wallLegal(state, w)) walls.push(w);
       }
@@ -121,7 +139,9 @@ function candidateWalls(state: GameState, mover: PlayerId, budget: NodeBudget): 
 
 /**
  * mover の合法手一覧。ゴールに近づくコマ移動を先頭に寄せて並べ、alpha-beta 枝刈りの
- * 効率を上げる(良さそうな手を先に調べるほど枝刈りが効く)。壁手はその後に続ける。
+ * 効率を上げる(良さそうな手を先に調べるほど枝刈りが効く)と同時に、budget が
+ * 潤沢なうちに最有力候補(前進コマ移動)が優先的に深く読まれるようにする。
+ * 壁手はその後に続ける。
  */
 function orderedMoves(state: GameState, mover: PlayerId, budget: NodeBudget): Move[] {
   const goalRow = state.goal[mover];
@@ -137,8 +157,11 @@ function orderedMoves(state: GameState, mover: PlayerId, budget: NodeBudget): Mo
 /**
  * root 視点の評価を最大化するミニマックス(alpha-beta 枝刈り付き)。
  * mover はこのノードで手を指すプレイヤー、root は評価を最大化したい AI 自身。
- * budget.remaining を使い切ったら SearchAborted を投げて即座に巻き戻る
- * (budget.remaining=Infinity なら打ち切りは起きない。固定深さ経路用)。
+ *
+ * budget.remaining が尽きたら、そのノード以降は evaluate() による静的評価に
+ * 即座に縮退する(例外で巻き戻さない)。手の並び替えにより有望な手ほど budget が
+ * 潤沢なうちに深く評価されるため、budget が尽きた後に浅く評価される手は元々
+ * 選ばれにくい手であることが多く、実害は小さい。
  */
 function search(
   state: GameState,
@@ -149,13 +172,13 @@ function search(
   root: PlayerId,
   budget: NodeBudget,
 ): number {
-  if (--budget.remaining <= 0) throw new SearchAborted();
-  if (state.winner !== null || depth === 0) return evaluate(state, root);
+  if (state.winner !== null || depth === 0 || budget.remaining <= 0) return evaluate(state, root);
 
   const maximizing = mover === root;
   let value = maximizing ? -Infinity : Infinity;
 
   for (const move of orderedMoves(state, mover, budget)) {
+    if (budget.remaining <= 0) break;
     const res = applyMove(state, move, mover);
     if (!res.ok) continue;
     const score = search(res.value, opponentOf(mover), depth - 1, alpha, beta, root, budget);
@@ -168,13 +191,26 @@ function search(
     }
     if (beta <= alpha) break;
   }
-  return value;
+  // ここまで1手も展開できなかった(budget切れ・盤面のせいで全滅)場合は、
+  // 静的評価にフォールバックして必ず何らかの値を返す。
+  return value === -Infinity || value === Infinity ? evaluate(state, root) : value;
 }
 
 /**
- * who の手番で指定深さの最善手を1つ選ぶ(ミニマックス+逆戻り抑止ペナルティ)。
- * budget を使い切ったら SearchAborted を投げる(呼び出し側が前の深さの結果へ
- * フォールバックできるようにするため、ここでは途中結果を返さず必ず例外で知らせる)。
+ * who の手番で最善手を1つ選ぶ(ミニマックス+逆戻り抑止ペナルティ)。
+ *
+ * ルート候補(コマ移動・上位の壁候補)へ budget を「均等に」割り振ってから各々を
+ * 探索する。単純に1つの budget を候補間で使い回すと、orderedMoves がコマ移動を
+ * 先に並べるため、budget が潤沢なコマ移動だけが深く読まれ、後回しの壁候補は
+ * budget が尽きた後にしか調べられず常に浅い評価(=段階的縮退で即 evaluate())しか
+ * 受けられない。深い探索は浅い探索より高めのスコアが出やすいため、この順序
+ * バイアスにより壁がほとんど選ばれなくなる回帰が実際に起きた(自己対局で壁が
+ * 一切使われなかった)。
+ *
+ * ただし壁候補は最大50〜70通りにもなるため、全部を均等分配すると1候補あたりの
+ * budget が小さすぎて逆に意味のある読みができなくなる(相手の応手を1つも見ずに
+ * 打ち切られる)。そこで壁候補は着手直後の静的評価で ROOT_WALL_CANDIDATE_LIMIT
+ * 件に事前に絞り込み、その上位候補とコマ移動全体とで budget を均等分配する。
  */
 function selectBestMove(
   state: GameState,
@@ -182,7 +218,7 @@ function selectBestMove(
   depth: number,
   recent: readonly Position[],
   rng: (() => number) | undefined,
-  budget: NodeBudget,
+  totalBudget: NodeBudget,
 ): Move {
   /** move の着地マスが recent の何番目に古いかを返す(0=最古)。該当なければ -1。 */
   function revisitPenalty(move: Move): number {
@@ -194,14 +230,33 @@ function selectBestMove(
     return REVISIT_PENALTY * (idx + 1);
   }
 
+  // 候補一覧の生成自体は軽い(ルート1回だけの壁legalチェック)ので無制限で行う。
+  const allMoves = orderedMoves(state, who, { remaining: Infinity });
+  const pawnMoves = allMoves.filter((m) => m.type === 'pawn');
+  const wallMoves = allMoves.filter((m) => m.type === 'wall');
+
+  // 壁候補は着手直後の静的評価(1手先読みなし)で上位 ROOT_WALL_CANDIDATE_LIMIT
+  // 件に絞ってから本探索にかける(理由は定数の説明を参照)。
+  const topWallMoves = wallMoves
+    .map((move) => {
+      const res = applyMove(state, move, who);
+      return { move, score: res.ok ? evaluate(res.value, who) : -Infinity };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, ROOT_WALL_CANDIDATE_LIMIT)
+    .map(({ move }) => move);
+
+  const moves = [...pawnMoves, ...topWallMoves];
+  const perMoveBudget = moves.length > 0 ? totalBudget.remaining / moves.length : totalBudget.remaining;
+
   let bestScore = -Infinity;
   const best: Move[] = [];
-  for (const move of orderedMoves(state, who, budget)) {
-    if (--budget.remaining <= 0) throw new SearchAborted();
+  for (const move of moves) {
     const res = applyMove(state, move, who);
     if (!res.ok) continue;
     // 各ルート手は評価の正確さを保つため全幅ウィンドウで探索する(タイブレーク集合が
     // 枝刈りの境界値で汚染されないようにするため)。
+    const budget: NodeBudget = { remaining: perMoveBudget };
     const score = search(res.value, opponentOf(who), depth - 1, -Infinity, Infinity, who, budget) - revisitPenalty(move);
     if (score > bestScore) {
       bestScore = score;
@@ -227,14 +282,12 @@ function selectBestMove(
 /**
  * who の手番で AI が指す手を選ぶ純関数。
  *
- * - options.depth を指定すると、その深さで固定のミニマックス探索を行う(ノード数
- *   制限なし。テストや決定的な挙動が必要な場面向け)。
- * - 省略すると、depth=1 から順に深さを増やす反復深化(iterative deepening)を
- *   maxNodes(既定24,000ノード)まで繰り返し、予算切れになった深さの結果は捨てて
- *   直前に完了した深さの結果を使う。ノード数ベースなので実行環境の速度に関わらず
- *   常に有限の計算量で打ち切れる(カジュアル対戦では強さより低遅延を優先するための
- *   設計。壁時計ベースの時間予算は Cloudflare Workers のタイマー凍結により機能
- *   しないため、あえてノード数を使っている)。
+ * - options.depth を指定すると、その深さ・ノード数無制限で固定のミニマックス探索を
+ *   行う(テストや決定的な挙動が必要な場面向け)。
+ * - 省略すると、maxNodes(既定10,000)のノード数予算内で段階的縮退(graceful
+ *   degradation)しながら1回のパスで探索する(既定経路)。時計に依存しないため
+ *   実行環境の速度に関わらず必ず有限の計算量で終わり、かつ予算切れで捨てられる
+ *   計算が発生しない(カジュアル対戦では強さより低遅延を優先するための設計)。
  *
  * 同点最善手が複数あって rng が渡されていれば、その中からランダムに選んで対局に
  * 変化を持たせる。rng を省略すると決定的(常に同じ手)になり、テストしやすい。
@@ -248,17 +301,5 @@ export function chooseAiMove(state: GameState, who: PlayerId, options: AiOptions
   }
 
   const maxNodes = options.maxNodes ?? DEFAULT_NODE_BUDGET;
-
-  // depth=1 は常にごく少ないノード数で終わるので予算なしで確実な土台を作り、
-  // 以降は予算が残っている限り深さを増やして上書きする。
-  let best = selectBestMove(state, who, 1, recent, rng, { ...UNLIMITED_BUDGET });
-  for (let depth = 2; depth <= MAX_ITERATIVE_DEPTH; depth++) {
-    try {
-      best = selectBestMove(state, who, depth, recent, rng, { remaining: maxNodes });
-    } catch (e) {
-      if (e instanceof SearchAborted) break;
-      throw e;
-    }
-  }
-  return best;
+  return selectBestMove(state, who, MAX_SEARCH_DEPTH, recent, rng, { remaining: maxNodes });
 }
