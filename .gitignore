@@ -7,3 +7,5 @@ dist/
 .DS_Store
 .vscode/
 coverage/
+.dev.vars
+.dev.vars.*
